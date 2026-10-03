@@ -48,9 +48,11 @@ jobs:
           git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
           test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RECOVERY_RUN_ID" --jq .head_sha)"
       - uses: pnpm/action-setup@v4
+        if: github.event_name == 'push'
         with:
           version: 9.14.4
       - uses: actions/setup-node@v4
+        if: github.event_name == 'push'
         with:
           node-version: 24
           cache: "pnpm"
