@@ -45,6 +45,10 @@ def make_feed(xpi, unsigned_dir, repository, tag):
         if payload != set(expected):
             raise ValueError(f"Signed payload file set differs: {payload ^ set(expected)}")
         for name, path in expected.items():
+            if name == "manifest.json":
+                if json.loads(archive.read(name)) != manifest:
+                    raise ValueError("Signed manifest content changed")
+                continue
             if archive.read(name) != path.read_bytes():
                 raise ValueError(f"Signed payload changed: {name}")
     asset = f"kiss-translator_{tag}_firefox.xpi"
@@ -78,7 +82,7 @@ def main():
     files = list((ROOT / "build/signed").glob("*.xpi"))
     if len(files) != 1:
         raise ValueError("Expected exactly one signed XPI; approval may still be pending")
-    asset, feed = make_feed(files[0], ROOT / "build/firefox", os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_REF_NAME"])
+    asset, feed = make_feed(files[0], ROOT / "build/firefox", os.environ["GITHUB_REPOSITORY"], os.environ.get("RELEASE_TAG", os.environ.get("GITHUB_REF_NAME", "")))
     output = ROOT / "build/firefox-release"
     output.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(files[0], output / asset)
