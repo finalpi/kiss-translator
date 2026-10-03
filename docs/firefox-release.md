@@ -22,6 +22,11 @@ GitHub Actions Pages 工件为源，除非同步调整发布方式及更新地�
 4. 将 `kiss-translator_v<版本>_firefox.xpi` 上传到对应 GitHub Release。
 5. 发布包含该 XPI 下载地址和 SHA-256 的 `firefox-updates.json`，与 Web 站点
    一起部署到 gh-pages。更新清单不会先于 XPI 上传成功而发布，也拒绝版本回退。
+6. 显式调用 Pages 构建接口，并等待线上更新清单与产物逐字节一致。工作流令牌
+   推送分支不会自动触发 Pages 构建，因此不能只凭分支提交成功判断已上线。
+
+发布构建使用 `pnpm build:release && pnpm zip`，与完整构建的目标相同，但不会
+全仓库格式化源码。提交前仅格式化本次改动，避免混入已有文件的无关格式调整。
 
 手动审核可能超过一小时。超时会让签名 job 失败并保留线上旧更新清单；AMO
 可能已收到提交，不要盲目重新上传同版本。先查看 AMO 版本状态，取回获批的

@@ -2,7 +2,7 @@
   "manifest_version": 2,
   "name": "KISS Translator (finalpi)",
   "description": "__MSG_app_description__",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "default_locale": "en",
   "browser_specific_settings": {
     "gecko": {
@@ -10,8 +10,14 @@
       "update_url": "https://finalpi.github.io/kiss-translator/firefox-updates.json",
       "strict_min_version": "140.0",
       "data_collection_permissions": {
-        "required": ["websiteContent", "authenticationInfo", "browsingActivity"],
-        "optional": ["technicalAndInteraction"]
+        "required": [
+          "websiteContent",
+          "authenticationInfo",
+          "browsingActivity"
+        ],
+        "optional": [
+          "technicalAndInteraction"
+        ]
       }
     },
     "gecko_android": {
