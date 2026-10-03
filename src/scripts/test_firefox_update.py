@@ -55,6 +55,22 @@ class UpdateFeedTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "signature"):
             self.feed()
 
+    def test_manifest_formatting_is_allowed_but_content_changes_are_not(self):
+        for changed in (False, True):
+            manifest = copy.deepcopy(self.manifest)
+            if changed:
+                manifest["version"] = "9.9.9"
+            with ZipFile(self.xpi, "w") as archive:
+                archive.writestr("manifest.json", json.dumps(manifest, indent=4, sort_keys=True))
+                archive.write(self.source / "background.js", "background.js")
+                archive.writestr("META-INF/mozilla.rsa", "fixture")
+                archive.writestr("META-INF/mozilla.sf", "fixture")
+            if changed:
+                with self.assertRaisesRegex(ValueError, "manifest content"):
+                    self.feed()
+            else:
+                self.feed()
+
     def test_changed_payload_rejected(self):
         self.archive(changed=True)
         with self.assertRaisesRegex(ValueError, "file set"):

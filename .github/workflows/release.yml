@@ -1,12 +1,24 @@
 name: publish release version
 
 on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing signed release tag to recover (no AMO resubmission)
+        required: true
+      recovery_run_id:
+        description: Original release run containing build-artifacts
+        required: true
   push:
     tags:
       - "v*"
 
 permissions:
   contents: write
+  actions: read
+
+env:
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
 concurrency:
   group: release-publish
@@ -17,6 +29,24 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Recover original build artifacts
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: build
+          run-id: ${{ inputs.recovery_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify recovery tag and original run
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RECOVERY_RUN_ID: ${{ inputs.recovery_run_id }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$RECOVERY_RUN_ID" =~ ^[0-9]+$ ]]
+          git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RECOVERY_RUN_ID" --jq .head_sha)"
       - uses: pnpm/action-setup@v4
         with:
           version: 9.14.4
@@ -25,11 +55,15 @@ jobs:
           node-version: 24
           cache: "pnpm"
       - name: Check release version
-        run: test "$GITHUB_REF_NAME" = "v$(node -p 'require("./package.json").version')"
+        if: github.event_name == 'push'
+        run: test "$RELEASE_TAG" = "v$(node -p 'require("./package.json").version')"
       - run: pnpm install --frozen-lockfile
+        if: github.event_name == 'push'
       - run: python3 -B src/scripts/test_firefox_update.py
       - run: pnpm build:release && pnpm zip
+        if: github.event_name == 'push'
       - run: python3 src/scripts/package-firefox-amo.py
+        if: github.event_name == 'push'
       - uses: actions/upload-artifact@v4
         with:
           name: build-artifacts
@@ -102,6 +136,7 @@ jobs:
           name: build-artifacts
           path: build
       - name: Sign unlisted Firefox extension with matching source
+        if: github.event_name == 'push'
         env:
           WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
           WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
@@ -114,12 +149,18 @@ jobs:
             --source-dir=build/firefox --artifacts-dir=build/signed \
             --upload-source-code="build/amo/kiss-translator-${version}-source.zip" \
             --approval-timeout=3600000
+      - name: Retrieve the already approved AMO version
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: python3 src/scripts/fetch-amo-signed.py
       - name: Validate signed payload and generate update feed
         run: python3 src/scripts/firefox-update.py prepare
       - name: Upload signed XPI before publishing the update feed
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" build/firefox-release/*.xpi --repo "$GITHUB_REPOSITORY"
+        run: gh release upload "$RELEASE_TAG" build/firefox-release/*.xpi --repo "$GITHUB_REPOSITORY"
       - uses: actions/upload-artifact@v4
         with:
           name: firefox-update
@@ -155,6 +196,7 @@ jobs:
 
       - uses: actions/create-release@v1
         id: create-release
+        if: github.event_name == 'push'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -164,6 +206,7 @@ jobs:
           draft: false
           prerelease: false
   upload-release:
+    if: github.event_name == 'push'
     needs: [build, create-release]
     strategy:
       matrix:
