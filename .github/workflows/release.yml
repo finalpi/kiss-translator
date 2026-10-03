@@ -5,6 +5,13 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
+concurrency:
+  group: release-publish
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -17,25 +24,107 @@ jobs:
         with:
           node-version: 24
           cache: "pnpm"
-      - run: pnpm install
-      - run: pnpm build+zip
+      - name: Check release version
+        run: test "$GITHUB_REF_NAME" = "v$(node -p 'require("./package.json").version')"
+      - run: pnpm install --frozen-lockfile
+      - run: python3 -B src/scripts/test_firefox_update.py
+      - run: pnpm build:release && pnpm zip
+      - run: python3 src/scripts/package-firefox-amo.py
       - uses: actions/upload-artifact@v4
         with:
           name: build-artifacts
           path: build
+          include-hidden-files: true
   deploy-web:
-    needs: build
+    needs: [build, sign-firefox]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pages: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: build-artifacts
           path: build
+      - uses: actions/download-artifact@v4
+        with:
+          name: firefox-update
+          path: build/web
+      - name: Reject an older update feed
+        shell: bash
+        run: |
+          if git ls-remote --exit-code --heads origin gh-pages > /dev/null; then
+            git fetch origin gh-pages
+            if git cat-file -e FETCH_HEAD:firefox-updates.json 2>/dev/null; then
+              git show FETCH_HEAD:firefox-updates.json > "$RUNNER_TEMP/previous-firefox-updates.json"
+              python3 src/scripts/firefox-update.py check-feed build/web/firefox-updates.json "$RUNNER_TEMP/previous-firefox-updates.json"
+            fi
+          else
+            status=$?
+            test "$status" -eq 2
+          fi
       - name: Deploy to GitHub Pages
         uses: JamesIves/github-pages-deploy-action@v4
         with:
           folder: build/web
+      - name: Build Pages and verify the published update feed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/pages/builds"
+          feed_url=$(python3 -c 'import json; print(json.load(open("public/manifest.firefox.json"))["browser_specific_settings"]["gecko"]["update_url"])')
+          for attempt in $(seq 1 40); do
+            if curl --fail --silent --show-error --location "$feed_url?run=$GITHUB_RUN_ID&attempt=$attempt" -o "$RUNNER_TEMP/firefox-updates.json" &&
+              cmp -s build/web/firefox-updates.json "$RUNNER_TEMP/firefox-updates.json"; then
+              echo 'Published Firefox update feed verified.'
+              exit 0
+            fi
+            sleep 15
+          done
+          echo 'Pages update feed did not become current within 10 minutes.'
+          exit 1
+  sign-firefox:
+    needs: [build, create-release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.14.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: build
+      - name: Sign unlisted Firefox extension with matching source
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        shell: bash
+        run: |
+          test -n "$WEB_EXT_API_KEY" || { echo 'Missing AMO_JWT_ISSUER'; exit 1; }
+          test -n "$WEB_EXT_API_SECRET" || { echo 'Missing AMO_JWT_SECRET'; exit 1; }
+          version=$(node -p 'require("./package.json").version')
+          pnpm dlx web-ext@10.7.0 sign --no-config-discovery --channel=unlisted \
+            --source-dir=build/firefox --artifacts-dir=build/signed \
+            --upload-source-code="build/amo/kiss-translator-${version}-source.zip" \
+            --approval-timeout=3600000
+      - name: Validate signed payload and generate update feed
+        run: python3 src/scripts/firefox-update.py prepare
+      - name: Upload signed XPI before publishing the update feed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" build/firefox-release/*.xpi --repo "$GITHUB_REPOSITORY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firefox-update
+          path: build/firefox-release/firefox-updates.json
+          if-no-files-found: error
   create-release:
     needs: build
     runs-on: ubuntu-24.04

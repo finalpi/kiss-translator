@@ -36,6 +36,7 @@ import { createClient, getPatcher } from "webdav";
 import { fetchPatcher } from "./fetch";
 import { kissLog } from "./log";
 import { encryptSyncValue, decryptSyncValue } from "./syncCrypto";
+import { requireSyncDataConsent } from "./dataConsent";
 import {
   enqueueStorageSync,
   enqueueStorageWrite,
@@ -247,12 +248,14 @@ const decryptSyncData = async (data, syncEncryptKey) => {
  * options.forceWrite 只用于 WebDAV/Gist 客户端侧跳过远端时间戳比较；
  * Worker 协议不额外透传该字段，重加密时通过提升 updateAt 表达新密文版本。
  */
-const syncByType = async (syncType, data, args, options) =>
-  syncType === OPT_SYNCTYPE_WEBDAV
+const syncByType = async (syncType, data, args, options) => {
+  await requireSyncDataConsent();
+  return syncType === OPT_SYNCTYPE_WEBDAV
     ? await syncByWebdav(data, args, options)
     : syncType === OPT_SYNCTYPE_GIST
       ? await syncByGist(data, args, options)
       : await syncByWorker(data, args);
+};
 
 /**
  * 将已经读取成功的旧版明文远端数据，用当前同步加密口令回写成密文。
@@ -675,6 +678,7 @@ export const trySyncWords = async () => {
  * @returns {Promise<string>} 返回生成的规则订阅分享 URL
  */
 export const syncShareRules = async ({ rules, syncUrl, syncKey }) => {
+  await requireSyncDataConsent();
   const data = {
     key: KV_RULES_SHARE_KEY,
     value: JSON.stringify(rules, null, 2),

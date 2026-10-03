@@ -1,11 +1,31 @@
 {
   "manifest_version": 2,
-  "name": "__MSG_app_name__",
+  "name": "KISS Translator (finalpi)",
   "description": "__MSG_app_description__",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "default_locale": "en",
-  "author": "Gabe<yugang2002@gmail.com>",
-  "homepage_url": "https://github.com/fishjar/kiss-translator",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "finalpi@outlook.com",
+      "update_url": "https://finalpi.github.io/kiss-translator/firefox-updates.json",
+      "strict_min_version": "140.0",
+      "data_collection_permissions": {
+        "required": [
+          "websiteContent",
+          "authenticationInfo",
+          "browsingActivity"
+        ],
+        "optional": [
+          "technicalAndInteraction"
+        ]
+      }
+    },
+    "gecko_android": {
+      "strict_min_version": "142.0"
+    }
+  },
+  "author": "finalpi <finalpi@outlook.com>",
+  "homepage_url": "https://github.com/finalpi/kiss-translator",
   "background": {
     "scripts": [
       "background.js"
