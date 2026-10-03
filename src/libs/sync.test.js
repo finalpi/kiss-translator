@@ -64,7 +64,17 @@ jest.mock("./syncCrypto", () => ({
   decryptSyncValue: jest.fn(),
 }));
 
-import { changeSyncEncryptKey, syncData, syncSettingAndRules } from "./sync";
+jest.mock("./dataConsent", () => ({
+  requireSyncDataConsent: jest.fn(),
+}));
+
+import {
+  changeSyncEncryptKey,
+  syncData,
+  syncSettingAndRules,
+  syncShareRules,
+} from "./sync";
+import { requireSyncDataConsent } from "./dataConsent";
 import {
   apiCreateGist,
   apiGetGist,
@@ -96,6 +106,7 @@ const RULES_KEY = "kiss-rules_v2.json";
 const WORDS_KEY = "kiss-words.json";
 
 beforeEach(() => {
+  requireSyncDataConsent.mockReset().mockResolvedValue(undefined);
   const transaction = {
     getObj: () => getSyncWithDefault(),
     setObj: (key, value) =>
@@ -122,6 +133,38 @@ beforeEach(() => {
     if (next !== undefined) await putSync({ syncMeta: next.syncMeta });
     return next ?? current;
   });
+});
+
+test("denied Firefox consent blocks sync before contacting Gist", async () => {
+  apiListGists.mockClear();
+  apiGetGist.mockClear();
+  apiCreateGist.mockClear();
+  apiUpdateGistFile.mockClear();
+  requireSyncDataConsent.mockRejectedValue(new Error("consent denied"));
+  getSyncWithDefault.mockResolvedValue({
+    syncType: "GitHub Gist",
+    syncKey: SYNC_KEY,
+    syncEncryptKey: SYNC_ENCRYPT_KEY,
+    syncMeta: {},
+  });
+  await expect(syncData(SETTING_KEY, { theme: "dark" })).rejects.toThrow(
+    "consent denied"
+  );
+  expect(apiListGists).not.toHaveBeenCalled();
+  expect(apiGetGist).not.toHaveBeenCalled();
+  expect(apiCreateGist).not.toHaveBeenCalled();
+  expect(apiUpdateGistFile).not.toHaveBeenCalled();
+});
+
+test("denied Firefox consent also blocks rule sharing", async () => {
+  requireSyncDataConsent.mockRejectedValue(new Error("consent denied"));
+  await expect(
+    syncShareRules({
+      rules: [],
+      syncUrl: "https://example.com",
+      syncKey: "test",
+    })
+  ).rejects.toThrow("consent denied");
 });
 
 const gistFileContent = (value, updateAt) =>
