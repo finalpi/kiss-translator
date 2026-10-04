@@ -153,7 +153,7 @@ function showErr(message) {
 /**
  * 依据匹配规则，获取用户生词本中的所有单词用于高亮显示。
  * @param {Object} rule 当前页面的翻译匹配规则
- * @returns {Promise<Array<string>>} 生词本里的单词数组
+ * @returns {Promise<Object|Array>} 生词条目及词形元数据，禁用时为空数组
  */
 async function getFavWords(rule) {
   if (
@@ -161,7 +161,7 @@ async function getFavWords(rule) {
     rule.highlightWords !== OPT_HIGHLIGHT_WORDS_DISABLE
   ) {
     try {
-      return Object.keys(await getWordsWithDefault());
+      return await getWordsWithDefault();
     } catch (err) {
       logger.info("get fav words", err);
     }

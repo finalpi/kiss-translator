@@ -1,6 +1,7 @@
 import { STOKEY_WORDS, KV_WORDS_KEY } from "../config";
 import { useCallback, useMemo } from "react";
 import { useStorage } from "./Storage";
+import { normalizeWordForms } from "../libs/favoriteWordForms";
 
 const DEFAULT_FAVWORDS = {};
 
@@ -16,13 +17,21 @@ export function useFavWords() {
    * Toggle a favorite using metadata captured once for this user action.
    */
   const toggleFav = useCallback(
-    (word, timestamp = null, phonetic = "", definition = "", examples = []) => {
+    (
+      word,
+      timestamp = null,
+      phonetic = "",
+      definition = "",
+      examples = [],
+      forms = []
+    ) => {
       const wordData = {
         createdAt: Date.now(),
         timestamp,
         phonetic,
         definition,
         examples: Array.isArray(examples) ? [...examples] : examples,
+        forms: normalizeWordForms(forms),
       };
       Object.keys(wordData).forEach((key) => {
         if (
@@ -49,10 +58,13 @@ export function useFavWords() {
 
   /** Merge new words while preserving metadata for existing favorites. */
   const mergeWords = useCallback(
-    (words) => {
+    (words, formsByWord = {}) => {
       const createdAt = Date.now();
       const additions = Object.fromEntries(
-        words.map((word) => [word, { createdAt }])
+        words.map((word) => {
+          const forms = normalizeWordForms(formsByWord[word]);
+          return [word, { createdAt, ...(forms.length ? { forms } : {}) }];
+        })
       );
       return save((prev) => ({ ...additions, ...prev }));
     },
@@ -60,6 +72,21 @@ export function useFavWords() {
   );
 
   const clearWords = useCallback(() => save({}), [save]);
+
+  // Enrich existing favorites only; never resurrect a concurrently deleted word.
+  const updateWordForms = useCallback(
+    (word, forms) => {
+      const incoming = normalizeWordForms(forms);
+      return save((prev) => {
+        if (!prev[word] || !incoming.length) return prev;
+        const existing = normalizeWordForms(prev[word].forms);
+        const merged = normalizeWordForms([...existing, ...incoming]);
+        if (merged.length === existing.length) return prev;
+        return { ...prev, [word]: { ...prev[word], forms: merged } };
+      });
+    },
+    [save]
+  );
 
   const favList = useMemo(
     () =>
@@ -75,6 +102,7 @@ export function useFavWords() {
     wordList,
     toggleFav,
     mergeWords,
+    updateWordForms,
     clearWords,
     isLoading,
   };

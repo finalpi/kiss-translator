@@ -1,5 +1,6 @@
 import { TouchParagraph, touchParent, isTouchExcluded } from "./touchParagraph";
 import { isInBlacklist } from "./blacklist";
+import { favoriteWordIndex, normalizeWordForms } from "./favoriteWordForms";
 import {
   APP_LCNAME,
   APP_CONSTS,
@@ -370,6 +371,8 @@ export class Translator {
   #useSheetFallback = false; // Firefox 跨作用域限制标记：adoptedStyleSheets 不可用时直接走内联 <style>
   #apisMap = new Map(); // 用于接口快速查找
   #favWords = []; // 收藏词汇
+  #favoriteRecords = new Map();
+  #favoriteOwners = new Map();
   #favoriteHighlightScopes = new Set(); // 已进入收藏词高亮流程的扫描单元
 
   #observedNodes = new WeakSet(); // 存储所有被识别出的、可翻译的 DOM 节点单元
@@ -2719,7 +2722,9 @@ export class Translator {
         // 奇数索引是匹配到的关键词
         const bTag = document.createElement("b");
         bTag.className = Translator.KISS_CLASS.highlight;
-        bTag.dataset.kissFavoriteWord = this.#normalizeFavoriteWord(fragment);
+        bTag.dataset.kissFavoriteWord =
+          this.#favoriteOwners.get(this.#normalizeFavoriteWord(fragment)) ||
+          this.#normalizeFavoriteWord(fragment);
         bTag.style.cssText = this.#rule.highlightStyle || "";
         bTag.textContent = fragment;
         this.#skipMoNodes.add(bTag);
@@ -2744,7 +2749,9 @@ export class Translator {
     }
 
     const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const escapedWords = words.map(escapeRegex);
+    const escapedWords = [...words]
+      .sort((a, b) => b.length - a.length)
+      .map(escapeRegex);
     const wordRegex = new RegExp(`\\b(${escapedWords.join("|")})\\b`, "gi");
 
     if (parentNode.nodeType === Node.ELEMENT_NODE) {
@@ -2781,33 +2788,34 @@ export class Translator {
   }
 
   #dedupeFavoriteWords(words) {
-    const seen = new Set();
-    return (Array.isArray(words) ? words : []).filter((word) => {
-      const normalized = this.#normalizeFavoriteWord(word);
-      if (!normalized || seen.has(normalized)) return false;
-      seen.add(normalized);
-      return true;
-    });
+    const { records, owners } = favoriteWordIndex(words);
+    this.#favoriteRecords = records;
+    this.#favoriteOwners = owners;
+    return [...owners.keys()];
   }
 
   #handleFavoriteWordChange(event) {
-    const { word, isFavorite } = event.detail || {};
+    const { word, isFavorite, forms } = event.detail || {};
     const normalized = this.#normalizeFavoriteWord(word);
     if (!normalized || typeof isFavorite !== "boolean") return;
 
-    if (isFavorite) {
-      if (
-        !this.#favWords.some(
-          (item) => this.#normalizeFavoriteWord(item) === normalized
-        )
-      ) {
-        this.#favWords = [...this.#favWords, word.trim()];
-      }
-    } else {
-      this.#favWords = this.#favWords.filter(
-        (item) => this.#normalizeFavoriteWord(item) !== normalized
+    if (isFavorite)
+      this.#favoriteRecords.set(
+        normalized,
+        normalizeWordForms([
+          ...(this.#favoriteRecords.get(normalized) || []),
+          ...(Array.isArray(forms) ? forms : []),
+        ])
       );
-    }
+    else this.#favoriteRecords.delete(normalized);
+    this.#favWords = this.#dedupeFavoriteWords(
+      Object.fromEntries(
+        [...this.#favoriteRecords].map(([key, value]) => [
+          key,
+          { forms: value },
+        ])
+      )
+    );
 
     if (
       this.#rule.highlightWords !== OPT_HIGHLIGHT_WORDS_BEFORETRANS &&
@@ -2816,34 +2824,35 @@ export class Translator {
       return;
     }
 
-    if (isFavorite) {
-      this.#favoriteHighlightScopes.forEach((scope) => {
-        this.#highlightWordsDeeply(scope, [word.trim()]);
-      });
-    } else {
-      this.#removeFavoriteWordHighlights(normalized);
-    }
+    // Reassign collisions as well: removing an exact favorite may reveal an
+    // inflection belonging to a remaining favorite.
+    this.#refreshFavoriteHighlights();
+    this.#favoriteHighlightScopes.forEach((scope) =>
+      this.#highlightWordsDeeply(scope)
+    );
   }
 
-  #removeFavoriteWordHighlights(normalizedWord) {
+  #refreshFavoriteHighlights() {
     const highlights = new Set();
     this.#favoriteHighlightScopes.forEach((scope) => {
-      if (
-        scope.matches?.(`.${Translator.KISS_CLASS.highlight}`) &&
-        scope.dataset.kissFavoriteWord === normalizedWord
-      ) {
+      if (scope.matches?.(`.${Translator.KISS_CLASS.highlight}`)) {
         highlights.add(scope);
       }
       scope
         .querySelectorAll?.(`.${Translator.KISS_CLASS.highlight}`)
         .forEach((node) => {
-          if (node.dataset.kissFavoriteWord === normalizedWord) {
-            highlights.add(node);
-          }
+          highlights.add(node);
         });
     });
 
     highlights.forEach((highlight) => {
+      const owner = this.#favoriteOwners.get(
+        this.#normalizeFavoriteWord(highlight.textContent)
+      );
+      if (owner) {
+        highlight.dataset.kissFavoriteWord = owner;
+        return;
+      }
       const textNode = document.createTextNode(highlight.textContent || "");
       this.#skipMoNodes.add(textNode);
       highlight.replaceWith(textNode);
@@ -3710,7 +3719,11 @@ export class Translator {
       return;
     }
 
-    const word = (highlight.textContent || "").trim();
+    const word = (
+      highlight.dataset.kissFavoriteWord ||
+      highlight.textContent ||
+      ""
+    ).trim();
     const i18n = newI18n(this.#setting.uiLang || "zh");
     const currentRunId = ++this.#hoverBubbleRunId;
     this.#hoverBubbleTarget = highlight;

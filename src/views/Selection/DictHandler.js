@@ -13,6 +13,7 @@ export const dictHandlers = {
     apiFn: apiMicrosoftDict,
     // 从返回数据中读取单词原型
     reWord: (data) => data?.word,
+    wordForms: (data) => data?.presents || [],
     // 将词典解释转换为纯文本数组（用于快速复制）
     toText: (data) =>
       data?.trs?.map(({ pos, def }) => `${pos ? `[${pos}] ` : ""}${def}`) || [],
