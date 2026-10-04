@@ -6,6 +6,21 @@ import { useFavWords } from "../../hooks/FavWords";
 import { kissLog } from "../../libs/log";
 import { useSetting } from "../../hooks/Setting";
 import { EVENT_FAVORITE_WORD_CHANGE } from "../../config";
+import { normalizeWordForms } from "../../libs/favoriteWordForms";
+
+const EMPTY_FORMS = [];
+function notifyFavorite(word, receipt) {
+  const data = receipt.value[word];
+  document.dispatchEvent(
+    new CustomEvent(EVENT_FAVORITE_WORD_CHANGE, {
+      detail: {
+        word,
+        isFavorite: Boolean(data),
+        ...(data?.forms ? { forms: data.forms } : {}),
+      },
+    })
+  );
+}
 
 /**
  * Favorite word button with a heart icon.
@@ -14,13 +29,20 @@ import { EVENT_FAVORITE_WORD_CHANGE } from "../../config";
  * @param {string} props.word - Word to add to or remove from favorites.
  * @param {string} props.title - Hover tooltip text.
  */
-export default function FavBtn({ word, title }) {
+export default function FavBtn({
+  word,
+  title,
+  forms = EMPTY_FORMS,
+  ready = true,
+}) {
   // Read favorite words and the toggle action from useFavWords.
-  const { favWords, toggleFav, mergeWords, isLoading } = useFavWords();
+  const { favWords, toggleFav, mergeWords, updateWordForms, isLoading } =
+    useFavWords();
   const { context, setting } = useSetting();
   const [loading, setLoading] = useState(false);
   const pending = useRef(false);
   const autoAttempt = useRef(null);
+  const enrichmentAttempt = useRef(null);
   const isFavorite = Boolean(favWords[word]);
   const autoCollect =
     context === "tranbox" && setting?.tranboxSetting?.autoFavWord;
@@ -28,19 +50,18 @@ export default function FavBtn({ word, title }) {
   // Toggle the favorite state on click.
   const saveFavorite = useCallback(
     async (collectOnly = false) => {
-      if (isLoading || pending.current) return;
+      if (!ready || isLoading || pending.current) return;
       pending.current = true;
       try {
         setLoading(true);
         const receipt = await (collectOnly
-          ? mergeWords([word])
-          : toggleFav(word));
-        const isFavorite = Boolean(receipt.value[word]);
-        document.dispatchEvent(
-          new CustomEvent(EVENT_FAVORITE_WORD_CHANGE, {
-            detail: { word, isFavorite },
-          })
-        );
+          ? forms.length
+            ? mergeWords([word], { [word]: forms })
+            : mergeWords([word])
+          : forms.length
+            ? toggleFav(word, null, "", "", [], forms)
+            : toggleFav(word));
+        notifyFavorite(word, receipt);
       } catch (err) {
         kissLog("set fav", err);
       } finally {
@@ -48,13 +69,14 @@ export default function FavBtn({ word, title }) {
         setLoading(false);
       }
     },
-    [mergeWords, toggleFav, word, isLoading]
+    [mergeWords, toggleFav, word, isLoading, forms, ready]
   );
 
   useEffect(() => {
     if (!autoCollect) autoAttempt.current = null;
     if (
       !isLoading &&
+      ready &&
       !loading &&
       !pending.current &&
       autoCollect &&
@@ -66,11 +88,48 @@ export default function FavBtn({ word, title }) {
       autoAttempt.current = word;
       void saveFavorite(true);
     }
-  }, [autoCollect, favWords, saveFavorite, word, isLoading, loading]);
+  }, [autoCollect, favWords, saveFavorite, word, isLoading, loading, ready]);
+
+  useEffect(() => {
+    if (
+      !ready ||
+      isLoading ||
+      pending.current ||
+      !isFavorite ||
+      !updateWordForms
+    )
+      return;
+    const incoming = normalizeWordForms(forms);
+    const existing = normalizeWordForms(favWords[word]?.forms);
+    if (!incoming.some((form) => !existing.includes(form))) return;
+    const attempt = JSON.stringify([word, incoming]);
+    if (enrichmentAttempt.current === attempt) return;
+    enrichmentAttempt.current = attempt;
+    pending.current = true;
+    setLoading(true);
+    void updateWordForms(word, incoming)
+      .then((receipt) => {
+        if (receipt.changed) notifyFavorite(word, receipt);
+      })
+      .catch((err) => kissLog("update favorite forms", err))
+      .finally(() => {
+        pending.current = false;
+        setLoading(false);
+      });
+  }, [
+    ready,
+    isLoading,
+    isFavorite,
+    forms,
+    favWords,
+    word,
+    updateWordForms,
+    loading,
+  ]);
 
   return (
     <IconButton
-      disabled={loading || isLoading}
+      disabled={!ready || loading || isLoading}
       size="small"
       onClick={() => saveFavorite()}
       title={title}

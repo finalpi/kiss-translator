@@ -1327,6 +1327,64 @@ describe("Translator rule styles", () => {
     );
   });
 
+  test("highlights saved inflections and reassigns exact favorites on removal", async () => {
+    document.body.innerHTML =
+      '<main id="root"><p id="target">Weed weeds seaweed compost composting composted</p></main>';
+    createTranslator(
+      {
+        autoScan: "false",
+        selector: "#target",
+        highlightWords: OPT_HIGHLIGHT_WORDS_BEFORETRANS,
+      },
+      { minLength: 0 },
+      {
+        weed: { forms: ["weeds"] },
+        compost: { forms: ["composting", "composted"] },
+        composting: {},
+      }
+    );
+    await flushAsync();
+    const highlights = () => [
+      ...document.querySelectorAll(
+        `#target .${Translator.KISS_CLASS.highlight}`
+      ),
+    ];
+    expect(
+      highlights().map((node) => [
+        node.textContent,
+        node.dataset.kissFavoriteWord,
+      ])
+    ).toEqual([
+      ["Weed", "weed"],
+      ["weeds", "weed"],
+      ["compost", "compost"],
+      ["composting", "composting"],
+      ["composted", "compost"],
+    ]);
+    const calls = apiTranslate.mock.calls.length;
+    document.dispatchEvent(
+      new CustomEvent(EVENT_FAVORITE_WORD_CHANGE, {
+        detail: { word: "composting", isFavorite: false },
+      })
+    );
+    expect(
+      highlights().find((node) => node.textContent === "composting").dataset
+        .kissFavoriteWord
+    ).toBe("compost");
+    document.dispatchEvent(
+      new CustomEvent(EVENT_FAVORITE_WORD_CHANGE, {
+        detail: { word: "weed", isFavorite: false },
+      })
+    );
+    expect(highlights().some((node) => /weed/i.test(node.textContent))).toBe(
+      false
+    );
+    expect(document.getElementById("target").textContent).toContain(
+      "Weed weeds seaweed"
+    );
+    expect(apiTranslate).toHaveBeenCalledTimes(calls);
+  });
+
   test("applies updated favorites to post-translation and dynamic scopes", async () => {
     document.body.innerHTML = `
       <main id="root">

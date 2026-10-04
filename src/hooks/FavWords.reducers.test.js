@@ -77,6 +77,34 @@ describe("favorite word mutation inputs", () => {
     expect(reduce({})).toEqual(preview);
   });
 
+  test("stores dictionary forms and enriches without resurrecting a deleted favorite", () => {
+    favorites.toggleFav(
+      "compost",
+      null,
+      "",
+      "",
+      [],
+      ["composts", "composting"]
+    );
+    expect(mockSave.mock.calls[0][0]({}).compost.forms).toEqual([
+      "composts",
+      "composting",
+    ]);
+    favorites.updateWordForms("compost", ["composted"]);
+    const enrich = mockSave.mock.calls[1][0];
+    expect(enrich({})).toEqual({});
+    const previous = {
+      compost: { createdAt: 1, definition: "saved", forms: ["composts"] },
+    };
+    const enriched = enrich(previous);
+    expect(enriched.compost).toEqual({
+      createdAt: 1,
+      definition: "saved",
+      forms: ["composts", "composted"],
+    });
+    expect(enrich(enriched)).toBe(enriched);
+  });
+
   test("returns the persistence result for an explicit full clear", () => {
     const pending = Promise.resolve({ value: {}, changed: true });
     mockSave.mockReturnValueOnce(pending);

@@ -19,6 +19,7 @@ jest.mock("./DictHandler", () => ({
     Bing: {
       apiFn: jest.fn(),
       reWord: (data) => (data ? data.word : ""),
+      wordForms: (data) => data?.presents || [],
       toText: (data) => (data ? data.lines : []),
       uiAudio: () => null,
       uiTrans: () => null,
@@ -39,10 +40,15 @@ jest.mock("./CopyBtn", () => {
 
 jest.mock("./FavBtn", () => {
   const React = require("react");
-  return function MockFavoriteButton({ word }) {
+  return function MockFavoriteButton({ word, forms, ready }) {
     return React.createElement(
       "button",
-      { type: "button", "data-favorite-word": word },
+      {
+        type: "button",
+        "data-favorite-word": word,
+        "data-forms": JSON.stringify(forms),
+        disabled: !ready,
+      },
       "favorite"
     );
   };
@@ -52,7 +58,13 @@ test("resets dictionary actions to the current query while loading", async () =>
   useAsyncNow.mockReturnValue({
     loading: false,
     error: null,
-    data: { word: "previous lemma", lines: ["previous definition"] },
+    data: {
+      value: {
+        word: "previous lemma",
+        lines: ["previous definition"],
+        presents: ["weeds"],
+      },
+    },
   });
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -65,6 +77,9 @@ test("resets dictionary actions to the current query while loading", async () =>
   expect(container.querySelector("[data-copy-text]").dataset.copyText).toBe(
     "previous lemma\nprevious definition"
   );
+  expect(container.querySelector("[data-forms]").dataset.forms).toBe(
+    '["weeds"]'
+  );
 
   useAsyncNow.mockReturnValue({ loading: true, error: null, data: null });
   act(() => root.render(<DictCont text="current" enDict="Bing" />));
@@ -76,6 +91,8 @@ test("resets dictionary actions to the current query while loading", async () =>
     container.querySelector("[data-favorite-word]").dataset.favoriteWord
   ).toBe("current");
   expect(container.querySelector(".MuiCircularProgress-root")).not.toBeNull();
+  expect(container.querySelector("[data-forms]").dataset.forms).toBe("[]");
+  expect(container.querySelector("[data-favorite-word]").disabled).toBe(true);
 
   act(() => root.unmount());
   container.remove();

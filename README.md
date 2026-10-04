@@ -4,6 +4,17 @@
 
 一个简约、开源的 [双语对照翻译扩展 & 油猴脚本](https://github.com/fishjar/kiss-translator)。
 
+## finalpi 分支的独特修改
+
+本仓库是 [finalpi/kiss-translator](https://github.com/finalpi/kiss-translator)，基于上游 fishjar/kiss-translator 继续维护，保留原项目许可证和署名。以下是本 fork 增加的功能；源码中的新功能以实际发布版本为准。
+
+- **收藏词形关联高亮**：收藏默认词典中的词头时，同时保存词典已返回的英文词形。例如收藏 `weed` 可关联 `weeds`，收藏 `compost` 可关联 `composts / composting / composted`。这些形式共用一个收藏条目，按完整词匹配、忽略大小写，悬浮查词关联到收藏词头；取消收藏会移除关联高亮。如果某个词形也被单独收藏，优先关联其独立条目。
+  - 当前复用必应词典已展示的词形，不额外联网查询、不猜测词尾，也不按上下文区分词性。复数、时态等词典返回形式均可关联。
+  - 已有收藏在默认词典面板中再次使用必应查询时会自动补齐词形，无需删除重收藏。没有词形数据的词典、AI 词典收藏或导入条目仍支持原词高亮；不自动批量查询历史收藏。
+  - 词形保存在生词本条目的 `forms` 字段中，随现有生词本同步传递，不增加重复单词条目。请启用页面的生词高亮功能；其他已打开页面可刷新以载入新的词形数据。
+- **Firefox 非公开签名与自动更新**：使用独立 ID `finalpi@outlook.com`，发布签名 XPI 和带 SHA-256 的更新清单；支持从已批准的 AMO 版本恢复发布。首次需要安装此 fork 的签名版，后续通过统一更新地址更新。详见 [Firefox 发布说明](docs/firefox-release.md)。
+- **Firefox 数据声明与同步授权**：提供数据传输说明，并在设置同步、规则分享前检查可撤销的数据授权。详见 [隐私说明](docs/firefox-privacy.md)。
+
 [kiss-translator.webm](https://github.com/fishjar/kiss-translator/assets/1157624/f7ba8a5c-e4a8-4d5a-823a-5c5c67a0a47f)
 
 ## 感谢以下赞助商对本项目的支持

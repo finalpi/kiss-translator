@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import FavBtn from "./FavBtn";
 import { browser } from "../../libs/browser";
 import { STOKEY_WORDS, STOKEY_SYNC, KV_WORDS_KEY } from "../../config";
+import { EVENT_FAVORITE_WORD_CHANGE } from "../../config";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -104,3 +105,62 @@ test("automatic collection does not toggle an already saved word during hydratio
     jest.useRealTimers();
   }
 });
+
+test.each([false, true])(
+  "persists dictionary forms for new/existing favorites (existing=%s)",
+  async (saved) => {
+    jest.useFakeTimers();
+    const original = saved
+      ? { compost: { createdAt: 1, definition: "keep me" } }
+      : {};
+    const values = new Map([[STOKEY_WORDS, JSON.stringify(original)]]);
+    browser.storage.local.get.mockImplementation(async (keys) =>
+      Object.fromEntries(keys.map((key) => [key, values.get(key)]))
+    );
+    browser.storage.local.set.mockImplementation(async (entries) =>
+      Object.entries(entries).forEach(([key, value]) => values.set(key, value))
+    );
+    const notify = jest.fn();
+    document.addEventListener(EVENT_FAVORITE_WORD_CHANGE, notify);
+    const root = createRoot(document.createElement("div"));
+    try {
+      await act(async () =>
+        root.render(<FavBtn word="compost" ready={false} title="Collect" />)
+      );
+      expect(JSON.parse(values.get(STOKEY_WORDS))).toEqual(original);
+      await act(async () =>
+        root.render(
+          <FavBtn
+            word="compost"
+            forms={["composts", "composting", "composted"]}
+            title="Collect"
+          />
+        )
+      );
+      const result = JSON.parse(values.get(STOKEY_WORDS));
+      expect(Object.keys(result)).toEqual(["compost"]);
+      expect(result.compost.forms).toEqual([
+        "composts",
+        "composting",
+        "composted",
+      ]);
+      if (saved) expect(result.compost).toMatchObject(original.compost);
+      expect(notify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          detail: {
+            word: "compost",
+            isFavorite: true,
+            forms: result.compost.forms,
+          },
+        })
+      );
+      expect(
+        JSON.parse(values.get(STOKEY_SYNC)).syncMeta[KV_WORDS_KEY].updateAt
+      ).toBeGreaterThan(0);
+    } finally {
+      act(() => root.unmount());
+      document.removeEventListener(EVENT_FAVORITE_WORD_CHANGE, notify);
+      jest.useRealTimers();
+    }
+  }
+);
