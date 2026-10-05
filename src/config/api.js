@@ -1279,20 +1279,22 @@ export const defaultDictPrompt = createEnglishDictionaryPrompt({
   translationExample: "用于 Web 和原生用户界面的库",
   labels: {
     entry: "词条",
-    essentials: "基础形态与音标",
+    essentials: "基础信息与核心词义",
     pronunciation: "发音标注",
+    wordForm: "原形与当前词形",
     meanings: "词性与核心义项",
     context: "语境精析",
-    contextMeaning: "当前语义锁定",
-    register: "语境色调",
-    replacements: "原句平替词",
-    deepDive: "词源深度解构与辨析",
-    etymology: "词源与记忆锚点",
-    collocations: "高频搭配",
-    synonyms: "同义词微观辨析",
-    examples: "语料库双解例句",
+    contextSentence: "原句与翻译",
+    contextMeaning: "当前含义",
+    contextUsage: "句中用法与词形",
+    replacements: "替换与辨析",
+    deepDive: "常用搭配与易混辨析",
+    etymology: "词源或记忆提示（可选）",
+    collocations: "常用搭配",
+    synonyms: "容易混淆的用法",
+    examples: "双语例句与用法提示",
     translation: "中文翻译",
-    scene: "场景标签",
+    usage: "用法提示",
   },
 });
 
@@ -1332,29 +1334,37 @@ Example:
 
 ### 1. ${labels.essentials}
 - **${labels.pronunciation}**: 🇺🇸 [US IPA] ｜ 🇬🇧 [UK IPA]
+- **${labels.wordForm}**: Identify the lemma and the actual input form (for example, reach → reaching). Explain the morphological relationship in plain ${targetLanguage}; if the input is already the base form, say so briefly. For a fixed phrase, explain its structure only when useful. Do not infer the form's grammatical role in the sentence from its spelling alone; use section 2 for context-supported syntax and state uncertainty when needed.
 - **${labels.meanings}**:
-  - \`[part of speech]\` ① [primary ${targetLanguage} definition] ② [secondary ${targetLanguage} definition]
-  - \`[part of speech]\` ① [primary ${targetLanguage} definition]
+  - Give a small number of common senses with their parts of speech, putting the context-supported sense first and marking it as the sense used here only when the context supports that conclusion.
+  - For each sense, include a short English construction and its ${targetLanguage} meaning when this clarifies usage. Distinguish constructions that change meaning, such as reach + place versus reach for + object; do not present a phrasal construction's meaning as universally interchangeable with the bare verb.
 
 ### 2. ${labels.context} *[include only when useful Context exists]*
-- **${labels.contextMeaning}**: State the part of speech and precise meaning in the given context.
-- **${labels.register}**: Describe sentiment, register, formality, and tone.
-- **${labels.replacements}**: Give 1-2 English synonyms that can replace the entry in this context without changing the meaning.
+- **${labels.contextSentence}**: Quote the actual sentence containing the target from the supplied surrounding paragraph, highlight the target, and translate the sentence into ${targetLanguage}. Never invent an original sentence or reconstruct missing text. If only a fragment is available, quote and label it as a fragment; if no sentence is supplied, explicitly say so instead of treating a document title or summary as the original sentence.
+- **${labels.contextMeaning}**: Explain what the target specifically means in this sentence and what it refers to. Explain why this sense fits rather than other common senses when that distinction is useful. Do not merely repeat a generic dictionary definition.
+- **${labels.contextUsage}**: Explain the target's grammatical role, the phrase or clause it belongs to, what it modifies or connects to, and its relationship to nearby words. Explain why the actual word form is used (such as a plural, participle, or tense form); do not assume that an -ing form necessarily indicates an action in progress. Use a short structural breakdown or equivalent construction when helpful. If context is incomplete or ambiguous, identify the uncertainty and do not assert an unsupported grammatical analysis.
+- **${labels.replacements}**: Give 1-2 suitable alternatives or sentence rewrites only when useful. Explain whether each can replace the target directly, any required grammatical changes, and differences in meaning or emphasis. Do not claim exact equivalence when the meaning changes, and do not force a synonym where none fits naturally.
+Keep this section focused on the supplied sentence: explain simple uses briefly and expand complex structures as needed, without padding or repeating the general examples below. Skip it entirely when no useful Context exists.
 
 ### 3. ${labels.deepDive}
-- **${labels.etymology}**: Explain roots, affixes, historical development, or provide a logical memory aid.
 - **${labels.collocations}**:
-  * \`[collocation 1]\` ➔ [precise ${targetLanguage} translation]
-  * \`[collocation 2]\` ➔ [precise ${targetLanguage} translation]
+  - Give 2-4 useful patterns, preferably in the base form. Include required prepositions, objects, or complement slots, a precise ${targetLanguage} meaning, and a short example. Use a compact table only when it improves clarity.
 - **${labels.synonyms}**:
-  * **[entry] vs [synonym 1] vs [synonym 2]**: Explain their differences in context, intensity, register, or collocation habits in 1-2 sentences.
+  - When useful, contrast one genuinely confusable construction or near-synonym using paired short examples. Explain the concrete difference in grammar or meaning, including whether an action implies a completed result. Avoid repeating section 2's sentence rewrites or forcing a comparison for every entry.
+- **${labels.etymology}**:
+  - Optional: include historical etymology only when well established and confidently known; otherwise omit it. Never fabricate roots, origins, or citations. If using a mnemonic instead, explicitly label it as a memory association, not historical etymology, and ensure it reinforces rather than distorts the relevant meaning. Omit this item when it adds no value.
 
 ### 4. ${labels.examples}
-[Provide 2-3 natural examples from publications, news, professional writing, or everyday English.]
+[Create two natural learning examples. Explicitly label them in ${targetLanguage} as generated learning examples, not quotations from a particular corpus or publication; do not invent sources.]
 
-1. **[natural English example]**
+1. **[An example using the same sense and grammatical construction as the supplied sentence, when identifiable]**
    - 💡 *${labels.translation}*: [accurate, idiomatic ${targetLanguage} translation]
-   - 📌 *${labels.scene}*: \`[localized scene label]\``;
+   - 📌 *${labels.usage}*: [Explain how the target functions and how this mirrors the original construction.]
+2. **[An example contrasting a common different sense or construction]**
+   - 💡 *${labels.translation}*: [accurate, idiomatic ${targetLanguage} translation]
+   - 📌 *${labels.usage}*: [Explain the contrast, such as a noun-modifying participle versus be + -ing progressive, rather than merely naming a topic or scene.]
+
+If no usable original sentence exists, demonstrate a common use first and a useful contrast second without claiming either matches missing context. If there is no natural contrasting sense or construction, use a second common example and explain its usage without inventing a distinction. Match the original grammar, not merely the same spelling. Keep simple uses concise and expand only where it helps understanding; optional material may be omitted. These learning examples must never be presented as the user's original sentence.`;
 }
 
 export const defaultDictPromptEnJa = createEnglishDictionaryPrompt({
@@ -1365,18 +1375,20 @@ export const defaultDictPromptEnJa = createEnglishDictionaryPrompt({
     entry: "見出し語",
     essentials: "基本情報と発音",
     pronunciation: "発音",
+    wordForm: "原形と現在の語形",
     meanings: "品詞と主要な意味",
     context: "文脈分析",
+    contextSentence: "原文と翻訳",
     contextMeaning: "文脈上の意味",
-    register: "語調と使用域",
+    contextUsage: "文中の用法と語形",
     replacements: "文脈に合う言い換え",
-    deepDive: "語源・用法・類義語",
+    deepDive: "よく使う表現と混同しやすい用法",
     etymology: "語源と記憶の手がかり",
     collocations: "頻出コロケーション",
     synonyms: "類義語の使い分け",
-    examples: "コーパス用例",
+    examples: "対訳例文と用法のポイント",
     translation: "日本語訳",
-    scene: "使用場面",
+    usage: "用法のポイント",
   },
 });
 
@@ -1387,18 +1399,20 @@ export const defaultDictPromptEnKo = createEnglishDictionaryPrompt({
     entry: "표제어",
     essentials: "기본 정보와 발음",
     pronunciation: "발음",
+    wordForm: "원형과 현재 어형",
     meanings: "품사와 핵심 의미",
     context: "문맥 분석",
+    contextSentence: "원문과 번역",
     contextMeaning: "문맥상 의미",
-    register: "어조와 사용역",
+    contextUsage: "문장 속 용법과 어형",
     replacements: "문맥에 맞는 대체어",
-    deepDive: "어원·용법·유의어",
+    deepDive: "자주 쓰는 표현과 혼동하기 쉬운 용법",
     etymology: "어원과 기억 단서",
     collocations: "주요 연어",
     synonyms: "유의어 뉘앙스 비교",
-    examples: "말뭉치 예문",
+    examples: "이중 언어 예문과 용법 설명",
     translation: "한국어 번역",
-    scene: "사용 상황",
+    usage: "용법 설명",
   },
 });
 
@@ -1409,18 +1423,20 @@ export const defaultDictPromptEnVi = createEnglishDictionaryPrompt({
     entry: "Mục từ",
     essentials: "Thông tin cơ bản và phát âm",
     pronunciation: "Phát âm",
+    wordForm: "Dạng gốc và dạng từ hiện tại",
     meanings: "Từ loại và nghĩa cốt lõi",
     context: "Phân tích ngữ cảnh",
+    contextSentence: "Câu gốc và bản dịch",
     contextMeaning: "Nghĩa trong ngữ cảnh",
-    register: "Sắc thái và phong cách",
+    contextUsage: "Cách dùng và dạng từ trong câu",
     replacements: "Từ thay thế phù hợp",
-    deepDive: "Từ nguyên, cách dùng và từ đồng nghĩa",
+    deepDive: "Cụm từ thường gặp và cách dùng dễ nhầm",
     etymology: "Từ nguyên và mẹo ghi nhớ",
     collocations: "Cụm từ thường gặp",
     synonyms: "Phân biệt từ đồng nghĩa",
-    examples: "Ví dụ ngữ liệu",
+    examples: "Ví dụ song ngữ và lưu ý cách dùng",
     translation: "Bản dịch tiếng Việt",
-    scene: "Ngữ cảnh sử dụng",
+    usage: "Lưu ý cách dùng",
   },
 });
 
@@ -1432,18 +1448,20 @@ export const defaultDictPromptEnRu = createEnglishDictionaryPrompt({
     entry: "Словарная статья",
     essentials: "Основная информация и произношение",
     pronunciation: "Произношение",
+    wordForm: "Начальная и текущая форма слова",
     meanings: "Часть речи и основные значения",
     context: "Контекстный анализ",
+    contextSentence: "Исходное предложение и перевод",
     contextMeaning: "Значение в контексте",
-    register: "Тональность и регистр",
+    contextUsage: "Роль в предложении и форма слова",
     replacements: "Контекстные замены",
-    deepDive: "Этимология, употребление и синонимы",
+    deepDive: "Частые сочетания и сходные употребления",
     etymology: "Этимология и подсказка для запоминания",
     collocations: "Частотные сочетания",
     synonyms: "Различия между синонимами",
-    examples: "Корпусные примеры",
+    examples: "Двуязычные примеры и пояснения",
     translation: "Перевод на русский",
-    scene: "Сфера употребления",
+    usage: "Пояснение к употреблению",
   },
 });
 
