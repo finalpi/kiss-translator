@@ -96,7 +96,6 @@ export function useAudio(src) {
     // 清理函数：暂停播放，移除事件绑定，释放 URL 资源
     return () => {
       ignore = true;
-      ++playRequest.current;
       if (audioRef.current === audio) audioRef.current = null;
 
       audio.pause();
