@@ -11,9 +11,9 @@ import queryString from "query-string";
  * @param {Object} props
  * @param {string} props.src - Audio source URL.
  */
-export function AudioBtn({ src, title = "Speak", pauseTitle = "Pause" }) {
+export function AudioBtn({ src, title = "Speak", replayTitle = "Replay" }) {
   // Track audio loading and playback with useAudio.
-  const { error, ready, playing, onPlay, onPause } = useAudio(src);
+  const { error, ready, playing, onPlay } = useAudio(src);
 
   // Disable playback while loading or after an audio error.
   if (error || !ready) {
@@ -36,9 +36,9 @@ export function AudioBtn({ src, title = "Speak", pauseTitle = "Pause" }) {
       <IconButton
         color="primary"
         size="small"
-        onClick={onPause}
-        title={pauseTitle}
-        aria-label={pauseTitle}
+        onClick={onPlay}
+        title={replayTitle}
+        aria-label={replayTitle}
         aria-pressed="true"
       >
         <VolumeUpIcon fontSize="inherit" />

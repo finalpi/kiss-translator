@@ -133,7 +133,7 @@ describe("AudioBtn", () => {
     document.body.innerHTML = "";
   });
 
-  test("exposes a named ready action and pauses from the playing state", () => {
+  test("exposes a named ready action and replays from the playing state", () => {
     const onPlay = jest.fn();
     const onPause = jest.fn();
     mockAudioState = {
@@ -157,13 +157,14 @@ describe("AudioBtn", () => {
     mockAudioState = { ...mockAudioState, playing: true };
     act(() =>
       root.render(
-        <AudioBtn src="audio" title="Speak word" pauseTitle="Pause word" />
+        <AudioBtn src="audio" title="Speak word" replayTitle="Replay word" />
       )
     );
     expect(button.getAttribute("aria-pressed")).toBe("true");
-    expect(button.getAttribute("aria-label")).toBe("Pause word");
+    expect(button.getAttribute("aria-label")).toBe("Replay word");
     act(() => button.click());
-    expect(onPause).toHaveBeenCalledTimes(1);
+    expect(onPlay).toHaveBeenCalledTimes(2);
+    expect(onPause).not.toHaveBeenCalled();
 
     act(() => root.unmount());
   });

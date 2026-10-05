@@ -9,17 +9,22 @@ import { fetchData } from "../libs/fetch";
  */
 export function useAudio(src) {
   const audioRef = useRef(null);
+  const playRequest = useRef(0);
   const [error, setError] = useState(null); // 错误状态
   const [ready, setReady] = useState(false); // 音频是否准备好播放
   const [playing, setPlaying] = useState(false); // 当前是否在播放中
   const [loading, setLoading] = useState(false); // 音频数据是否在加载中
 
-  // 播放音频
+  // 每次点击从头重播；旧的播放请求失败不能覆盖新请求的状态。
   const onPlay = useCallback(async () => {
-    if (!audioRef.current) return;
+    const audio = audioRef.current;
+    if (!audio) return;
+    const request = ++playRequest.current;
     try {
-      await audioRef.current.play();
+      audio.currentTime = 0;
+      await audio.play();
     } catch (err) {
+      if (audioRef.current !== audio || request !== playRequest.current) return;
       logger.info("Playback failed:", err);
       setPlaying(false);
     }
@@ -91,6 +96,7 @@ export function useAudio(src) {
     // 清理函数：暂停播放，移除事件绑定，释放 URL 资源
     return () => {
       ignore = true;
+      if (audioRef.current === audio) audioRef.current = null;
 
       audio.pause();
       audio.removeAttribute("src");
