@@ -266,7 +266,8 @@ export default function TranForm({
     const input = inputRef.current;
     if (!input) return;
 
-    input.focus();
+    // Preserve the reader's position, including paginated EPUB iframe scroll.
+    input.focus({ preventScroll: true });
 
     const len = input.value.length;
     input.setSelectionRange(len, len);
