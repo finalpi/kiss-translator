@@ -11,9 +11,11 @@ jest.mock("../../libs/speech", () => ({
 }));
 
 let mockAudioState;
+let mockAudioBySrc;
 
 jest.mock("../../hooks/Audio", () => ({
-  useAudio: () =>
+  useAudio: (src) =>
+    mockAudioBySrc?.(src) ||
     mockAudioState || {
       error: null,
       ready: true,
@@ -131,6 +133,32 @@ describe("BrowserTtsBtn", () => {
 describe("AudioBtn", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
+    mockAudioBySrc = null;
+  });
+
+  test("failed primary audio switches once to fallback and resets for a new word", () => {
+    const seen = [];
+    mockAudioBySrc = (src) => {
+      seen.push(src);
+      return {
+        error: src === "broken" ? new Error("network") : null,
+        ready: src !== "broken",
+        playing: false,
+        onPlay: jest.fn(),
+      };
+    };
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => root.render(<AudioBtn src="broken" fallbackSrc="youdao" />));
+    expect(seen).toContain("youdao");
+    expect(container.querySelector("button").disabled).toBe(false);
+    expect(container.querySelector("button").title).toContain("Youdao");
+    act(() =>
+      root.render(<AudioBtn src="next-word" fallbackSrc="next-fallback" />)
+    );
+    expect(seen[seen.length - 1]).toBe("next-word");
+    act(() => root.unmount());
   });
 
   test("exposes a named ready action and replays from the playing state", () => {

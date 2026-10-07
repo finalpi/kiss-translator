@@ -58,6 +58,8 @@ export default function Selection({
     handleOpenTranbox,
     handleToggleTranbox,
     btnEvent,
+    followBoxSize,
+    clearFollowBoxSize,
   } = useSelectionController({
     tranboxSetting,
     followSelection,
@@ -88,8 +90,11 @@ export default function Selection({
             showBox={showBox}
             text={text}
             setText={setText}
-            boxSize={boxSize}
-            setBoxSize={setBoxSize}
+            boxSize={followBoxSize || boxSize}
+            setBoxSize={(value) => {
+              clearFollowBoxSize();
+              setBoxSize(value);
+            }}
             boxPosition={boxPosition}
             setBoxPosition={setBoxPosition}
             tranboxSetting={tranboxSetting}

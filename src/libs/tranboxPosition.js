@@ -19,7 +19,7 @@ function getTranBoxViewportElement() {
     : doc?.documentElement;
 }
 
-function getTranBoxViewportWidth() {
+export function getTranBoxViewportWidth() {
   const clientWidth = getTranBoxViewportElement()?.clientWidth;
   return clientWidth > 0 ? clientWidth : window.innerWidth;
 }

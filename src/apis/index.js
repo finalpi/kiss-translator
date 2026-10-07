@@ -1,4 +1,5 @@
 import queryString from "query-string";
+import { pronunciationAudioUrl } from "../libs/dictionaryPronunciation";
 import { fetchData } from "../libs/fetch";
 import {
   URL_CACHE_TRAN,
@@ -342,7 +343,7 @@ export const apiMicrosoftDict = async (text) => {
 
   // 提取英国音标与发音 mp3 路径
   if ($audioUK) {
-    const audioUK = host + $audioUK?.dataset?.mp3link;
+    const audioUK = pronunciationAudioUrl($audioUK.dataset.mp3link, host);
     const $phoneticUK = $audioUK.parentElement?.previousElementSibling;
     const phoneticUK = $phoneticUK?.textContent
       ?.trim()
@@ -352,7 +353,7 @@ export const apiMicrosoftDict = async (text) => {
 
   // 提取美国音标与发音 mp3 路径
   if ($audioUS) {
-    const audioUS = host + $audioUS?.dataset?.mp3link;
+    const audioUS = pronunciationAudioUrl($audioUS.dataset.mp3link, host);
     const $phoneticUS = $audioUS.parentElement?.previousElementSibling;
     const phoneticUS = $phoneticUS?.textContent
       ?.trim()
