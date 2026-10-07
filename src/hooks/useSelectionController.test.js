@@ -73,6 +73,7 @@ function TestController({
   setBoxPosition = jest.fn(),
   toLang = "zh-CN",
   skipLangs,
+  hideClickAway = false,
 }) {
   const tranboxSetting = {
     triggerMode,
@@ -91,7 +92,7 @@ function TestController({
     boxOffsetY,
     boxSize,
     setBoxPosition,
-    hideClickAway: false,
+    hideClickAway,
   });
 
   useEffect(() => {
@@ -173,6 +174,54 @@ test("renders iframe selection in the top document and keeps its context until a
   expect(controller.state.showBox).toBe(false);
   act(() => controller.root.unmount());
 });
+
+test.each([true, false])(
+  "iframe outside clicks respect close-on-click-away=%s",
+  async (hideClickAway) => {
+    detectLangFast.mockResolvedValue("en");
+    const controller = renderController({ hideClickAway });
+    const frame = document.createElement("iframe");
+    document.body.appendChild(frame);
+    frame.getBoundingClientRect = () => ({
+      left: 0,
+      top: 0,
+      width: 400,
+      height: 300,
+    });
+    await act(async () => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          source: frame.contentWindow,
+          data: {
+            channel: "kiss-translator:selection:v1",
+            kind: "selection",
+            id: "click-test",
+            session: "reader",
+            snapshot: { text: "looking", open: true },
+          },
+        })
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(controller.state.showBox).toBe(true);
+    act(() =>
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          source: frame.contentWindow,
+          data: {
+            channel: "kiss-translator:selection:v1",
+            kind: "click-away",
+            hasSelection: false,
+          },
+        })
+      )
+    );
+    expect(controller.state.showBox).toBe(!hideClickAway);
+    act(() => controller.root.unmount());
+    frame.remove();
+  }
+);
 
 async function dispatchWindowMouseup(
   delay = 200,

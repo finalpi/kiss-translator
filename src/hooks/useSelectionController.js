@@ -486,6 +486,16 @@ export default function useSelectionController({
 
   const receiveFrameSelectionRef = useRef(processSelectionSnapshot);
   receiveFrameSelectionRef.current = processSelectionSnapshot;
+  const clickAwayRef = useRef(null);
+  clickAwayRef.current = () => {
+    if (!hideClickAway) return;
+    ++selectionGenerationRef.current;
+    remoteSelectionRef.current = null;
+    pendingSelectionRef.current = null;
+    frameBridgeRef.current?.release();
+    setShowBtn(false);
+    setShowBox(false);
+  };
   const invalidateSelection = useCallback(() => {
     ++selectionGenerationRef.current;
   }, []);
@@ -514,6 +524,7 @@ export default function useSelectionController({
           setShowBox(false);
         }
       },
+      onClickAway: () => clickAwayRef.current?.(),
     });
     frameBridgeRef.current = bridge;
     return () => {

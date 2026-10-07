@@ -16,6 +16,7 @@
 - **Firefox 数据声明与同步授权**：提供数据传输说明，并在设置同步、规则分享前检查可撤销的数据授权。详见 [隐私说明](docs/firefox-privacy.md)。
 - **统一跨 iframe 划词浮层**：正文在 iframe 内时，逐层转换选区与鼠标坐标，并由最外层页面统一显示划词按钮和翻译面板，适用于 EPUB 阅读器和其他嵌套页面，不按网站域名特判。支持普通缩放、边框偏移及嵌套 frame；外层未启用插件或桥接不可用时回退到本层。滚动清理旧按钮，frame 移除时清理旧面板；输入框自动聚焦禁止滚动，以减少分页阅读位置跳动。
   - 初始化时为空的 iframe 会继续等待正文，后续章节文字插入后启动翻译器，避免动态阅读页面永久缺少段落翻译能力；空白包装 frame 仍保留划词转发。
+  - `about:srcdoc / about:blank / blob / data` 正文按创建页面的地址匹配站点规则，避免接口和语言配置落回无关默认值；普通 HTTP iframe 保留自己的规则。启用点击外部关闭时，iframe 内无选区的点击也会收起外层面板。
 
 [kiss-translator.webm](https://github.com/fishjar/kiss-translator/assets/1157624/f7ba8a5c-e4a8-4d5a-823a-5c5c67a0a47f)
 

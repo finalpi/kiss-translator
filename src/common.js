@@ -6,6 +6,7 @@ import {
 } from "./libs/storage";
 import { isIframe } from "./libs/iframe";
 import { createSelectionFrameBridge } from "./libs/selectionFrameBridge";
+import { getFrameRuleUrl } from "./libs/frameRuleUrl";
 import { genEventName } from "./libs/utils";
 import { handlePing, injectScript } from "./libs/gm";
 import { matchRule } from "./libs/rules";
@@ -271,6 +272,7 @@ export async function run(isUserscript = false) {
   pendingIframeStartupCleanup?.();
   try {
     const href = document?.location?.href || "";
+    const ruleHref = getFrameRuleUrl();
 
     if (isUserscript) {
       ensureUserscriptGM();
@@ -305,7 +307,7 @@ export async function run(isUserscript = false) {
     }
 
     // 5. 网页黑名单校验，命中时彻底不启动翻译
-    if (isInBlacklist(href, setting.blacklist)) {
+    if (isInBlacklist(ruleHref, setting.blacklist)) {
       return;
     }
 
@@ -313,25 +315,25 @@ export async function run(isUserscript = false) {
     if (isIframe && !(await waitForIframeTranslatableText())) {
       // Keep wrappers relaying selections, and initialize the full runtime
       // once chapter text is inserted into a formerly empty document.
-      watchForIframeContent(isUserscript, setting, href);
+      watchForIframeContent(isUserscript, setting, ruleHref);
       return;
     }
 
     // 6. 细粒度划词/输入框/鼠标悬停组件的专属黑名单拦截，若命中则单独禁用该交互组件
-    if (isInBlacklist(href, setting.tranboxSetting?.blacklist)) {
+    if (isInBlacklist(ruleHref, setting.tranboxSetting?.blacklist)) {
       setting.tranboxSetting.transOpen = false;
     }
 
-    if (isInBlacklist(href, setting.inputRule?.blacklist)) {
+    if (isInBlacklist(ruleHref, setting.inputRule?.blacklist)) {
       setting.inputRule.transOpen = false;
     }
 
-    if (isInBlacklist(href, setting.mouseHoverSetting?.blacklist)) {
+    if (isInBlacklist(ruleHref, setting.mouseHoverSetting?.blacklist)) {
       setting.mouseHoverSetting.useMouseHover = false;
     }
 
     // 7. 匹配当前网页专用的规则 (三级规则合并：个人 > 订阅 > 内置全局)
-    const rule = await matchRule(href, setting);
+    const rule = await matchRule(ruleHref, setting);
     const favWords = await getFavWords(rule);
     const fabConfig = { ...(await getFabWithDefault()) };
     // 名单命中时反转全局显隐：全局显示为黑名单，全局隐藏为白名单。
