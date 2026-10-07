@@ -2,6 +2,7 @@ import Typography from "@mui/material/Typography";
 import { AudioBtn, BaiduAudioBtn } from "./AudioBtn";
 import { OPT_DICT_BING, OPT_DICT_YOUDAO } from "../../config";
 import { apiMicrosoftDict, apiYoudaoDict } from "../../apis";
+import { lookupWithPronunciationFallback } from "../../libs/dictionaryPronunciation";
 
 /**
  * 各种英文词典的解析与渲染处理器策略映射表
@@ -10,7 +11,8 @@ export const dictHandlers = {
   // ------------------ 必应词典 (Bing Dictionary) ------------------
   [OPT_DICT_BING]: {
     // 异步查询 API 函数
-    apiFn: apiMicrosoftDict,
+    apiFn: (text) =>
+      lookupWithPronunciationFallback(text, apiMicrosoftDict, apiYoudaoDict),
     // 从返回数据中读取单词原型
     reWord: (data) => data?.word,
     wordForms: (data) => data?.presents || [],
@@ -20,17 +22,35 @@ export const dictHandlers = {
     // 渲染发音部分 (包含音标及发音按钮，包含英音、美音等)
     uiAudio: (data) => (
       <Typography component="div">
-        {data?.aus?.map(({ key, audio, phonetic }) => (
-          <Typography
-            component="div"
-            key={key}
-            style={{ display: "inline-block", paddingRight: "1em" }}
-          >
-            <Typography component="span">{`${key} [${phonetic || ""}]`}</Typography>
-            {/* 音频发音按钮 */}
-            <AudioBtn src={audio} />
-          </Typography>
-        ))}
+        {data?.aus?.map(
+          ({
+            key,
+            audio,
+            phonetic,
+            fallbackAudio,
+            phoneticSource,
+            audioSource,
+          }) => (
+            <Typography
+              component="div"
+              key={key}
+              style={{ display: "inline-block", paddingRight: "1em" }}
+            >
+              <Typography
+                component="span"
+                title={phoneticSource}
+              >{`${key}${phonetic ? ` [${phonetic}]` : ""}`}</Typography>
+              {/* 音频发音按钮 */}
+              {(audio || fallbackAudio) && (
+                <AudioBtn
+                  src={audio}
+                  fallbackSrc={fallbackAudio}
+                  title={`${key}音 · ${audioSource || "Youdao"}`}
+                />
+              )}
+            </Typography>
+          )
+        )}
       </Typography>
     ),
     // 渲染词典主体翻译与例句部分

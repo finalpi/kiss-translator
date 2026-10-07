@@ -1,6 +1,6 @@
 import IconButton from "@mui/material/IconButton";
 import VolumeUpIcon from "@mui/icons-material/VolumeUp";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAudio } from "../../hooks/Audio";
 import { canSpeak, speak } from "../../libs/speech";
 import queryString from "query-string";
@@ -11,9 +11,30 @@ import queryString from "query-string";
  * @param {Object} props
  * @param {string} props.src - Audio source URL.
  */
-export function AudioBtn({ src, title = "Speak", replayTitle = "Replay" }) {
+export function AudioBtn(props) {
+  return (
+    <AudioPlayback
+      key={JSON.stringify([props.src, props.fallbackSrc])}
+      {...props}
+    />
+  );
+}
+
+function AudioPlayback({
+  src,
+  fallbackSrc,
+  title = "Speak",
+  replayTitle = "Replay",
+}) {
+  const [useFallback, setUseFallback] = useState(!src && Boolean(fallbackSrc));
   // Track audio loading and playback with useAudio.
-  const { error, ready, playing, onPlay } = useAudio(src);
+  const { error, ready, playing, onPlay } = useAudio(
+    useFallback ? fallbackSrc : src
+  );
+  useEffect(() => {
+    if (error && fallbackSrc && !useFallback) setUseFallback(true);
+  }, [error, fallbackSrc, useFallback]);
+  const sourceTitle = useFallback ? `${title} · Youdao fallback` : title;
 
   // Disable playback while loading or after an audio error.
   if (error || !ready) {
@@ -21,8 +42,8 @@ export function AudioBtn({ src, title = "Speak", replayTitle = "Replay" }) {
       <IconButton
         disabled
         size="small"
-        title={title}
-        aria-label={title}
+        title={sourceTitle}
+        aria-label={sourceTitle}
         aria-busy={!error && !ready}
       >
         <VolumeUpIcon fontSize="inherit" />
@@ -51,8 +72,8 @@ export function AudioBtn({ src, title = "Speak", replayTitle = "Replay" }) {
     <IconButton
       onClick={onPlay}
       size="small"
-      title={title}
-      aria-label={title}
+      title={sourceTitle}
+      aria-label={sourceTitle}
       aria-pressed="false"
     >
       <VolumeUpIcon fontSize="inherit" />

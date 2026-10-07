@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
-import { sleep, limitNumber } from "../libs/utils";
+import { sleep } from "../libs/utils";
 import { isMobile } from "../libs/mobile";
 import {
   detectLangFast,
@@ -9,6 +9,7 @@ import {
 } from "../libs/detectFast";
 import useAutoHideTranBtn from "./useAutoHideTranBtn";
 import { createSelectionFrameBridge } from "../libs/selectionFrameBridge";
+import { getFollowSelectionLayout } from "../libs/followSelectionLayout";
 import {
   APP_CONSTS,
   OPT_TRANBOX_BTN_POSITION_FIXED,
@@ -20,9 +21,8 @@ import {
   OPT_TRANBOX_INTERACT_DBLCLICK,
 } from "../config";
 import {
-  getMaxTranBoxX,
-  getMaxTranBoxY,
-  getTranBoxOuterHeight,
+  getTranBoxViewportWidth,
+  getTranBoxViewportHeight,
 } from "../libs/tranboxPosition";
 
 const TRANBTN_SIZE = 40;
@@ -184,25 +184,6 @@ function getSelectionButtonPosition(rect, btnOffsetX = 0, btnOffsetY = 0) {
   return clampButtonPosition(rect.right + offsetX, rect.bottom + offsetY);
 }
 
-/**
- * 计算翻译框跟随选区时的最佳显示位置。
- * 默认显示在选区下方，若下方空间不足则智能翻转到上方。若选区过大导致上下均无空间，则停靠在视口顶部。
- */
-function getFollowBoxPosition(rect, boxOffsetX, boxOffsetY, boxSize) {
-  const x = (rect.left + rect.right) / 2 + boxOffsetX;
-  const bottomY = rect.bottom + boxOffsetY;
-  const maxY = getMaxTranBoxY(boxSize.h);
-  const y =
-    bottomY + getTranBoxOuterHeight(boxSize.h) > window.innerHeight
-      ? rect.top - getTranBoxOuterHeight(boxSize.h) - boxOffsetY
-      : bottomY;
-
-  return {
-    x: limitNumber(x, 0, getMaxTranBoxX(boxSize.w)),
-    y: limitNumber(y, 0, maxY),
-  };
-}
-
 function getTargetContext(target) {
   const element =
     target?.nodeType === Node.ELEMENT_NODE ? target : target?.parentElement;
@@ -259,11 +240,37 @@ export default function useSelectionController({
   const [text, setText] = useState("");
   const [textContext, setTextContext] = useState("");
   const [position, setPosition] = useState({ x: 0, y: 0 });
+  const [followBoxSize, setFollowBoxSize] = useState(null);
+  const positionFollowBox = useCallback(
+    (rect) => {
+      const layout = getFollowSelectionLayout(
+        rect,
+        boxSize,
+        { w: getTranBoxViewportWidth(), h: getTranBoxViewportHeight() },
+        { x: boxOffsetX, y: boxOffsetY }
+      );
+      setFollowBoxSize(layout.size);
+      setBoxPosition(layout.position);
+    },
+    [boxSize, boxOffsetX, boxOffsetY, setBoxPosition]
+  );
   const selectionRootRef = useRef(document);
   const pendingSelectionRef = useRef(null);
   const frameBridgeRef = useRef(null);
   const remoteSelectionRef = useRef(null);
   const selectionGenerationRef = useRef(0);
+
+  useEffect(() => {
+    if (!followSelection || !showBox) return;
+    const update = () => {
+      const snapshot = pendingSelectionRef.current;
+      if (snapshot?.rect && snapshot.source !== "panel")
+        positionFollowBox(snapshot.rect);
+    };
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, [followSelection, showBox, positionFollowBox]);
 
   const getActiveSelection = useCallback(
     () =>
@@ -421,10 +428,8 @@ export default function useSelectionController({
         return;
       }
 
-      if (snapshot.rect && followSelection) {
-        setBoxPosition(
-          getFollowBoxPosition(snapshot.rect, boxOffsetX, boxOffsetY, boxSize)
-        );
+      if (snapshot.rect && followSelection && snapshot.source !== "panel") {
+        positionFollowBox(snapshot.rect);
       }
 
       if (
@@ -475,11 +480,8 @@ export default function useSelectionController({
       btnOffsetX,
       btnOffsetY,
       followSelection,
-      boxOffsetX,
-      boxOffsetY,
       commitSelectionSnapshot,
-      boxSize,
-      setBoxPosition,
+      positionFollowBox,
       shouldSuppressSelection,
     ]
   );
@@ -593,20 +595,15 @@ export default function useSelectionController({
 
     selectionRootRef.current = document;
 
-    if (snapshot.rect && followSelection) {
-      setBoxPosition(
-        getFollowBoxPosition(snapshot.rect, boxOffsetX, boxOffsetY, boxSize)
-      );
+    if (snapshot.rect && followSelection && snapshot.source !== "panel") {
+      positionFollowBox(snapshot.rect);
     }
 
     pendingSelectionRef.current = snapshot;
     void handleOpenTranbox(snapshot.text);
   }, [
     followSelection,
-    boxOffsetX,
-    boxOffsetY,
-    setBoxPosition,
-    boxSize,
+    positionFollowBox,
     createSelectionSnapshot,
     handleOpenTranbox,
   ]);
@@ -703,6 +700,8 @@ export default function useSelectionController({
   }, [tranboxInteractMode, createSelectionSnapshot, commitSelectionSnapshot]);
 
   return {
+    followBoxSize: followSelection ? followBoxSize : null,
+    clearFollowBoxSize: () => setFollowBoxSize(null),
     showBox,
     setShowBox,
     showBtn,

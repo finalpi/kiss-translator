@@ -821,6 +821,42 @@ describe("useSelectionController", () => {
     });
   });
 
+  test("temporary follow size restores the preferred size for the next selection", async () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1075,
+    });
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 736,
+    });
+    const preferred = { w: 800, h: 600 };
+    const controller = renderController({
+      followSelection: true,
+      boxOffsetY: 10,
+      boxSize: preferred,
+    });
+    const paragraph = createParagraph("The library is open.");
+    currentSelection = makeSelection("library", paragraph, {
+      left: 500,
+      right: 560,
+      top: 410,
+      bottom: 430,
+    });
+    await dispatchWindowMouseup();
+    expect(controller.state.followBoxSize).toEqual({ w: 800, h: 326 });
+    expect(preferred).toEqual({ w: 800, h: 600 });
+    currentSelection = makeSelection("library", paragraph, {
+      left: 500,
+      right: 560,
+      top: 20,
+      bottom: 40,
+    });
+    await dispatchWindowMouseup();
+    expect(controller.state.followBoxSize).toEqual(preferred);
+    act(() => controller.root.unmount());
+  });
+
   test("positions the followed box above a selection near the viewport bottom", async () => {
     Object.defineProperty(window, "innerHeight", {
       configurable: true,
@@ -856,7 +892,7 @@ describe("useSelectionController", () => {
     });
   });
 
-  test("clamps the followed box inside the viewport when neither side fits", async () => {
+  test("places a tall followed box beside the selection", async () => {
     Object.defineProperty(window, "innerHeight", {
       configurable: true,
       writable: true,
@@ -880,7 +916,7 @@ describe("useSelectionController", () => {
     await dispatchWindowMouseup();
 
     expect(controller.setBoxPosition).toHaveBeenLastCalledWith({
-      x: 20,
+      x: 38,
       y: 0,
     });
 
@@ -889,7 +925,7 @@ describe("useSelectionController", () => {
     });
   });
 
-  test("falls back to the viewport top when the followed box is taller than the viewport", async () => {
+  test("bounds an oversized followed box beside the selection", async () => {
     Object.defineProperty(window, "innerHeight", {
       configurable: true,
       writable: true,
@@ -913,7 +949,7 @@ describe("useSelectionController", () => {
     await dispatchWindowMouseup();
 
     expect(controller.setBoxPosition).toHaveBeenLastCalledWith({
-      x: 20,
+      x: 38,
       y: 0,
     });
 
