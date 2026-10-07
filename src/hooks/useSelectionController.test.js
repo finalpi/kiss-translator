@@ -317,6 +317,59 @@ describe("useSelectionController", () => {
     jest.useRealTimers();
   });
 
+  test.each([true, false])(
+    "reader overlay pointerdown respects click-away=%s even with an old selection",
+    async (hideClickAway) => {
+      const controller = renderController({ hideClickAway });
+      const paragraph = createParagraph("The library is open.");
+      currentSelection = makeSelection("library", paragraph);
+      await dispatchWindowMouseup();
+      await act(async () => controller.state.handleOpenTranbox());
+      expect(controller.state.showBox).toBe(true);
+      const overlay = document.createElement("div");
+      document.body.appendChild(overlay);
+      overlay.addEventListener("pointerdown", (event) =>
+        event.stopPropagation()
+      );
+      act(() =>
+        overlay.dispatchEvent(
+          new MouseEvent("pointerdown", { bubbles: true, button: 0 })
+        )
+      );
+      expect(controller.state.showBox).toBe(!hideClickAway);
+      act(() => controller.root.unmount());
+    }
+  );
+
+  test("pointerdown inside the shadow panel or trigger preserves the panel", async () => {
+    const controller = renderController({ hideClickAway: true });
+    currentSelection = makeSelection(
+      "library",
+      createParagraph("The library is open.")
+    );
+    await dispatchWindowMouseup();
+    await act(async () => controller.state.handleOpenTranbox());
+    const { wrapper } = createPanelTarget();
+    const input = document.createElement("input");
+    wrapper.appendChild(input);
+    const button = document.createElement("button");
+    button.className = "KT-tranbtn";
+    document.body.appendChild(button);
+    for (const target of [input, button]) {
+      act(() =>
+        target.dispatchEvent(
+          new MouseEvent("pointerdown", {
+            bubbles: true,
+            composed: true,
+            button: 0,
+          })
+        )
+      );
+      expect(controller.state.showBox).toBe(true);
+    }
+    act(() => controller.root.unmount());
+  });
+
   test("keeps page selections pending until the trigger button in click mode", async () => {
     const controller = renderController();
     const pageParagraph = createParagraph("The library is open.");
