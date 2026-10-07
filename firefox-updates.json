@@ -3,9 +3,9 @@
     "finalpi@outlook.com": {
       "updates": [
         {
-          "version": "2.1.6",
-          "update_link": "https://github.com/finalpi/kiss-translator/releases/download/v2.1.6/kiss-translator_v2.1.6_firefox.xpi",
-          "update_hash": "sha256:0572f79c57eb8cf1c6d084c29fbbcd1fa5b86df2b2812cb643cee715d5408aca",
+          "version": "2.1.7",
+          "update_link": "https://github.com/finalpi/kiss-translator/releases/download/v2.1.7/kiss-translator_v2.1.7_firefox.xpi",
+          "update_hash": "sha256:8687060c5f048936657c42f358a47b55da8f5196880e56341c82c77a4928c635",
           "applications": {
             "gecko": {
               "strict_min_version": "140.0"
