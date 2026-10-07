@@ -5,6 +5,7 @@ import {
   getWordsWithDefault,
 } from "./libs/storage";
 import { isIframe } from "./libs/iframe";
+import { createSelectionFrameBridge } from "./libs/selectionFrameBridge";
 import { genEventName } from "./libs/utils";
 import { handlePing, injectScript } from "./libs/gm";
 import { matchRule } from "./libs/rules";
@@ -233,11 +234,41 @@ async function waitForIframeTranslatableText() {
   return hasIframeTranslatableText();
 }
 
+let pendingIframeStartupCleanup = null;
+
+function watchForIframeContent(isUserscript, setting, href) {
+  const relay = !isInBlacklist(href, setting.tranboxSetting?.blacklist)
+    ? createSelectionFrameBridge({})
+    : null;
+  let active = true;
+  const cleanup = () => {
+    active = false;
+    observer.disconnect();
+    window.removeEventListener("pagehide", cleanup);
+    relay?.dispose();
+    if (pendingIframeStartupCleanup === cleanup)
+      pendingIframeStartupCleanup = null;
+  };
+  const observer = new MutationObserver(() => {
+    if (!active || !hasIframeTranslatableText()) return;
+    cleanup();
+    void run(isUserscript);
+  });
+  observer.observe(document, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+  });
+  window.addEventListener("pagehide", cleanup, { once: true });
+  pendingIframeStartupCleanup = cleanup;
+}
+
 /**
  * 前端翻译器的核心运行总入口。
  * @param {boolean} isUserscript 是否作为油猴 Userscript 脚本模式运行 (false 代表作为浏览器 Extension 运行)
  */
 export async function run(isUserscript = false) {
+  pendingIframeStartupCleanup?.();
   try {
     const href = document?.location?.href || "";
 
@@ -280,6 +311,9 @@ export async function run(isUserscript = false) {
 
     // 5.1. iframe 空内容拦截：默认允许 iframe 翻译，但空 iframe 不继续挂载后续脚本
     if (isIframe && !(await waitForIframeTranslatableText())) {
+      // Keep wrappers relaying selections, and initialize the full runtime
+      // once chapter text is inserted into a formerly empty document.
+      watchForIframeContent(isUserscript, setting, href);
       return;
     }
 

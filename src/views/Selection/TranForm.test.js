@@ -1356,6 +1356,7 @@ describe("TranForm input focus and external text synchronization", () => {
   });
 
   test("focuses the original text input when auto focus is enabled", async () => {
+    const focus = jest.spyOn(HTMLTextAreaElement.prototype, "focus");
     const { container, root } = renderTranForm({
       text: "",
       simpleStyle: false,
@@ -1364,7 +1365,9 @@ describe("TranForm input focus and external text synchronization", () => {
     await flushEffects();
 
     expect(document.activeElement).toBe(container.querySelector("textarea"));
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
     act(() => root.unmount());
+    focus.mockRestore();
   });
 
   test("does not focus the original text input when auto focus is disabled", async () => {
@@ -1382,6 +1385,7 @@ describe("TranForm input focus and external text synchronization", () => {
   });
 
   test("focuses the source when expanding simple mode with auto focus disabled", async () => {
+    const focus = jest.spyOn(HTMLTextAreaElement.prototype, "focus");
     const view = renderTranForm({
       text: "Clipboard source text",
       simpleStyle: true,
@@ -1403,8 +1407,10 @@ describe("TranForm input focus and external text synchronization", () => {
     expect(input.value).toBe("Clipboard source text");
     expect(input.selectionStart).toBe(input.value.length);
     expect(input.selectionEnd).toBe(input.value.length);
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
 
     act(() => view.root.unmount());
+    focus.mockRestore();
   });
 
   test("focuses after asynchronous initialization allows auto focus", async () => {

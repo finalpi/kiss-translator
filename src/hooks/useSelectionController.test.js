@@ -127,6 +127,53 @@ function renderController(props = {}) {
   };
 }
 
+test("renders iframe selection in the top document and keeps its context until activation", async () => {
+  detectLangFast.mockResolvedValue("en");
+  const controller = renderController();
+  const frame = document.createElement("iframe");
+  document.body.appendChild(frame);
+  frame.getBoundingClientRect = () => ({
+    left: 200,
+    top: 100,
+    width: 400,
+    height: 300,
+  });
+  await act(async () => {
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        source: frame.contentWindow,
+        data: {
+          channel: "kiss-translator:selection:v1",
+          kind: "selection",
+          id: "frame-one",
+          session: "reader",
+          snapshot: {
+            text: "looking",
+            context: "He was looking at the mud.",
+            rect: { left: 20, right: 80, top: 30, bottom: 50 },
+            lastRect: { left: 20, right: 80, top: 30, bottom: 50 },
+            pointerPosition: { x: 80, y: 50 },
+          },
+        },
+      })
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(controller.state.showBtn).toBe(true);
+  expect(controller.state.position).toEqual({ x: 280, y: 150 });
+  await act(async () => controller.state.handleOpenTranbox());
+  expect(controller.state.showBox).toBe(true);
+  expect(controller.state.text).toBe("looking");
+  expect(controller.state.textContext).toBe("He was looking at the mud.");
+  await act(async () => {
+    frame.remove();
+    await Promise.resolve();
+  });
+  expect(controller.state.showBox).toBe(false);
+  act(() => controller.root.unmount());
+});
+
 async function dispatchWindowMouseup(
   delay = 200,
   { clientX = 0, clientY = 0 } = {}

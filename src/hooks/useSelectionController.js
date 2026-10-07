@@ -8,6 +8,7 @@ import {
   quickDetectLang,
 } from "../libs/detectFast";
 import useAutoHideTranBtn from "./useAutoHideTranBtn";
+import { createSelectionFrameBridge } from "../libs/selectionFrameBridge";
 import {
   APP_CONSTS,
   OPT_TRANBOX_BTN_POSITION_FIXED,
@@ -260,9 +261,18 @@ export default function useSelectionController({
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const selectionRootRef = useRef(document);
   const pendingSelectionRef = useRef(null);
+  const frameBridgeRef = useRef(null);
+  const remoteSelectionRef = useRef(null);
+  const selectionGenerationRef = useRef(0);
 
   const getActiveSelection = useCallback(
-    () => selectionRootRef.current?.getSelection?.() || window.getSelection(),
+    () =>
+      remoteSelectionRef.current
+        ? {
+            isCollapsed: false,
+            toString: () => remoteSelectionRef.current?.text || "",
+          }
+        : selectionRootRef.current?.getSelection?.() || window.getSelection(),
     []
   );
 
@@ -295,13 +305,22 @@ export default function useSelectionController({
   }, []);
 
   const handleOpenTranbox = useCallback(
-    (inputText) => {
+    async (inputText) => {
       const pending = pendingSelectionRef.current;
       const snapshot =
         inputText && pending?.text !== inputText
           ? { text: inputText, context: "", source: "manual" }
           : pending || { text: selectedText, context: "", source: "manual" };
 
+      if (
+        window.parent !== window &&
+        snapshot?.source !== "panel" &&
+        (await frameBridgeRef.current?.forward({ ...snapshot, open: true }))
+      ) {
+        setShowBtn(false);
+        setShowBox(false);
+        return;
+      }
       commitSelectionSnapshot(snapshot);
     },
     [commitSelectionSnapshot, selectedText]
@@ -358,16 +377,40 @@ export default function useSelectionController({
 
   const processSelectionSnapshot = useCallback(
     async (snapshot) => {
+      const generation = ++selectionGenerationRef.current;
       if (!snapshot?.text) {
+        frameBridgeRef.current?.clear();
+        remoteSelectionRef.current = null;
         setShowBtn(false);
         return;
+      }
+
+      if (!snapshot.remote) {
+        remoteSelectionRef.current = null;
+        frameBridgeRef.current?.release();
+      }
+      if (
+        window.parent !== window &&
+        !snapshot.remote &&
+        snapshot.source !== "panel"
+      ) {
+        remoteSelectionRef.current = null;
+        const forwarded = await frameBridgeRef.current?.forward(snapshot);
+        if (generation !== selectionGenerationRef.current) return;
+        if (forwarded) {
+          setShowBtn(false);
+          setShowBox(false);
+          return;
+        }
       }
 
       pendingSelectionRef.current = snapshot;
       setSelText(snapshot.text);
 
       // 目标语言/纯数字命中时，统一禁用划词按钮与翻译框弹出
-      if (await shouldSuppressSelection(snapshot.text)) {
+      const suppressed = await shouldSuppressSelection(snapshot.text);
+      if (generation !== selectionGenerationRef.current) return;
+      if (suppressed) {
         setShowBtn(false);
         setShowBox(false);
         return;
@@ -385,6 +428,7 @@ export default function useSelectionController({
       }
 
       if (
+        snapshot.open ||
         triggerMode === OPT_TRANBOX_TRIGGER_SELECT ||
         triggerMode === OPT_TRANBOX_TRIGGER_DBLCLICK
       ) {
@@ -439,6 +483,45 @@ export default function useSelectionController({
       shouldSuppressSelection,
     ]
   );
+
+  const receiveFrameSelectionRef = useRef(processSelectionSnapshot);
+  receiveFrameSelectionRef.current = processSelectionSnapshot;
+  const invalidateSelection = useCallback(() => {
+    ++selectionGenerationRef.current;
+  }, []);
+  useEffect(() => {
+    const bridge = createSelectionFrameBridge({
+      onSelection: (snapshot) => {
+        remoteSelectionRef.current = snapshot;
+        // Acknowledge transport immediately. Language detection can take longer
+        // than the fallback timeout and must not create a second local panel.
+        void receiveFrameSelectionRef
+          .current({ ...snapshot, remote: true })
+          .catch((error) => {
+            console.warn(
+              "[KISS-Translator] Frame selection processing failed",
+              error
+            );
+          });
+        return true;
+      },
+      onClear: (dispose) => {
+        ++selectionGenerationRef.current;
+        remoteSelectionRef.current = null;
+        setShowBtn(false);
+        if (dispose) {
+          pendingSelectionRef.current = null;
+          setShowBox(false);
+        }
+      },
+    });
+    frameBridgeRef.current = bridge;
+    return () => {
+      invalidateSelection();
+      frameBridgeRef.current = null;
+      bridge.dispose();
+    };
+  }, [invalidateSelection]);
 
   const handleSelectionEvent = useCallback(
     async (e) => {
@@ -505,7 +588,8 @@ export default function useSelectionController({
       );
     }
 
-    commitSelectionSnapshot(snapshot);
+    pendingSelectionRef.current = snapshot;
+    void handleOpenTranbox(snapshot.text);
   }, [
     followSelection,
     boxOffsetX,
@@ -513,7 +597,7 @@ export default function useSelectionController({
     setBoxPosition,
     boxSize,
     createSelectionSnapshot,
-    commitSelectionSnapshot,
+    handleOpenTranbox,
   ]);
 
   const btnEvent = useMemo(() => {

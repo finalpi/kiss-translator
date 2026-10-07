@@ -130,6 +130,7 @@ describe("common iframe startup", () => {
   });
 
   afterEach(() => {
+    window.dispatchEvent(new Event("pagehide"));
     if (originalOptionsPage === undefined) {
       delete process.env.REACT_APP_OPTIONSPAGE;
     } else {
@@ -191,6 +192,32 @@ describe("common iframe startup", () => {
     expect(matchRule).toHaveBeenCalledTimes(1);
     expect(TranslatorManager).toHaveBeenCalledTimes(1);
     expect(mockTranslatorManagerStart).toHaveBeenCalledTimes(1);
+  });
+
+  test("starts once when an initially empty iframe receives chapter text later", async () => {
+    mockIsIframe = true;
+    await run();
+    expect(TranslatorManager).not.toHaveBeenCalled();
+    document.body.innerHTML = "<main><p>Late EPUB chapter text</p></main>";
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(TranslatorManager).toHaveBeenCalledTimes(1);
+    expect(mockTranslatorManagerStart).toHaveBeenCalledTimes(1);
+    document.querySelector("p").append(" another sentence");
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(TranslatorManager).toHaveBeenCalledTimes(1);
+  });
+
+  test("does not start a discarded blank iframe or script-only content", async () => {
+    mockIsIframe = true;
+    await run();
+    document.body.innerHTML =
+      "<script>chapter text</script><textarea>ignored</textarea>";
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(TranslatorManager).not.toHaveBeenCalled();
+    window.dispatchEvent(new Event("pagehide"));
+    document.body.innerHTML = "<p>A discarded chapter</p>";
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(TranslatorManager).not.toHaveBeenCalled();
   });
 
   test("does not apply empty-text gate to top-level pages", async () => {
