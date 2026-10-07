@@ -103,6 +103,7 @@ export function createSelectionFrameBridge({
   win = window,
   onSelection,
   onClear,
+  onClickAway,
   timeout = 400,
 }) {
   let active = true;
@@ -134,7 +135,9 @@ export function createSelectionFrameBridge({
         resolve(false);
       }, timeout);
       pending.set(id, { resolve, timer });
-      if (!send(win.parent, { kind: "selection", id, session, snapshot: value })) {
+      if (
+        !send(win.parent, { kind: "selection", id, session, snapshot: value })
+      ) {
         win.clearTimeout(timer);
         pending.delete(id);
         resolve(false);
@@ -155,6 +158,12 @@ export function createSelectionFrameBridge({
     }
     const frame = findFrame(win.document, event.source);
     if (!frame) return;
+    if (data.kind === "click-away" && data.hasSelection === false) {
+      if (win.parent !== win)
+        send(win.parent, { kind: "click-away", hasSelection: false });
+      else onClickAway?.();
+      return;
+    }
     if (data.kind === "clear") {
       if (
         currentChild?.frame === frame &&
@@ -197,6 +206,22 @@ export function createSelectionFrameBridge({
   const selectionchange = () => {
     if (win.getSelection()?.isCollapsed) clear(false);
   };
+  const click = (event) => {
+    if (win.parent === win) return;
+    // A fallback panel/trigger inside this frame is not an outside click.
+    if (
+      event
+        .composedPath()
+        .some(
+          (node) =>
+            node?.hasAttribute?.("data-kiss-translator-shadow-host") ||
+            node?.classList?.contains("KT-tranbtn")
+        )
+    )
+      return;
+    if (win.getSelection()?.toString().trim()) return;
+    send(win.parent, { kind: "click-away", hasSelection: false });
+  };
   const observer = new win.MutationObserver(() => {
     if (currentChild && !currentChild.frame.isConnected) {
       currentChild = null;
@@ -210,6 +235,7 @@ export function createSelectionFrameBridge({
   win.addEventListener("resize", scroll);
   win.addEventListener("pagehide", pagehide);
   win.document.addEventListener("selectionchange", selectionchange);
+  win.addEventListener("click", click, true);
   return {
     forward,
     clear,
@@ -225,6 +251,7 @@ export function createSelectionFrameBridge({
       win.removeEventListener("resize", scroll);
       win.removeEventListener("pagehide", pagehide);
       win.document.removeEventListener("selectionchange", selectionchange);
+      win.removeEventListener("click", click, true);
       pending.forEach(({ resolve, timer }) => {
         win.clearTimeout(timer);
         resolve(false);
