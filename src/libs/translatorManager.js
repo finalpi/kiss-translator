@@ -43,7 +43,11 @@ import {
 } from "../config";
 import { logger } from "./log";
 import { getPopupDocumentIdentity } from "./popupDocument";
-import { MSG_GET_FRAME_ID, MSG_VALIDATE_DOCUMENT } from "../config/msg";
+import {
+  MSG_GET_FRAME_ID,
+  MSG_VALIDATE_DOCUMENT,
+  MSG_GET_PAGE_TRANSLATION_STATE,
+} from "../config/msg";
 
 /**
  * 前台翻译业务的总生命周期管理器。
@@ -61,6 +65,8 @@ export default class TranslatorManager {
   #menuCommandIds = [];
   #clearTouchListeners = [];
   #isActive = false;
+  #pageTranslationControlled = false;
+  #translationCommandRevision = 0;
 
   // 初始配置快照。restart 会用运行期状态刷新这些快照，再重建子模块。
   #setting;
@@ -161,6 +167,7 @@ export default class TranslatorManager {
       this.#setupSpaListeners();
     }
     this.#isActive = true;
+    this.#restorePageTranslationState();
     logger.info("TranslatorManager started.");
   }
 
@@ -188,6 +195,7 @@ export default class TranslatorManager {
 
     this.#createRuntimeModules();
     this.#refreshDocumentElementObserver();
+    this.#restorePageTranslationState();
     logger.info(`TranslatorManager restarted: ${reason}`);
   }
 
@@ -415,8 +423,46 @@ export default class TranslatorManager {
         ruleEditor: Boolean(this._ruleEditorManager),
       },
       isTopFrame: !this.#isIframe,
+      ...(!this.#isIframe && this.#pageTranslationControlled
+        ? { pageTranslationControlled: true }
+        : {}),
       document: this.#documentInfo,
     };
+  }
+
+  #restorePageTranslationState() {
+    if (!this.#isIframe || this.#isUserscript || !this._translator) return;
+    const translator = this._translator;
+    const revision = this.#translationCommandRevision;
+    Promise.resolve(
+      browser.runtime.sendMessage({ action: MSG_GET_PAGE_TRANSLATION_STATE })
+    )
+      .then((state) => {
+        if (
+          !this.#isActive ||
+          this._translator !== translator ||
+          revision !== this.#translationCommandRevision ||
+          typeof state?.enabled !== "boolean"
+        )
+          return;
+        // Inherited documents also retain the parent's live service/languages.
+        // Ordinary URL frames keep their independently matched site rule.
+        if (
+          /^(?:about:(?:blank|srcdoc)(?:[?#]|$)|blob:|data:)/i.test(
+            window.location.href
+          ) &&
+          state.rule
+        ) {
+          const values = Object.fromEntries(
+            ["apiSlug", "fromLang", "toLang"]
+              .filter((key) => typeof state.rule[key] === "string")
+              .map((key) => [key, state.rule[key]])
+          );
+          translator.updateRule(values);
+        }
+        state.enabled ? translator.enable() : translator.disable();
+      })
+      .catch(() => {});
   }
 
   /**
@@ -926,6 +972,18 @@ export default class TranslatorManager {
     }
 
     // Keep shared translation commands in sync without forwarding top-only UI.
+    if (
+      [
+        MSG_TRANS_TOGGLE,
+        MSG_TRANS_PUTRULE,
+        MSG_TRANS_TOGGLE_ONLY,
+        MSG_TRANS_TOGGLE_STYLE,
+      ].includes(action)
+    ) {
+      ++this.#translationCommandRevision;
+      if (!this.#isIframe && action === MSG_TRANS_TOGGLE)
+        this.#pageTranslationControlled = true;
+    }
     if (
       !fromExt &&
       !requiresInput &&

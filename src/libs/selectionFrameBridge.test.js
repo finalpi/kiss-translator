@@ -69,6 +69,25 @@ test("nested frames accumulate border, scale and negative pagination offsets", (
   outer.remove();
 });
 
+test("child pointerdown relays dismissal despite an existing selection and cleans up", () => {
+  const win = fakeWindow();
+  win.getSelection = () => ({ toString: () => "old selection" });
+  const postMessage = jest.fn();
+  win.parent = { postMessage };
+  const bridge = createSelectionFrameBridge({ win });
+  win.dispatchEvent(new MouseEvent("pointerdown", { button: 0 }));
+  expect(postMessage).toHaveBeenCalledWith(
+    { channel, kind: "click-away", hasSelection: false },
+    "*"
+  );
+  postMessage.mockClear();
+  win.dispatchEvent(new MouseEvent("pointerdown", { button: 2 }));
+  expect(postMessage).not.toHaveBeenCalled();
+  bridge.dispose();
+  win.dispatchEvent(new MouseEvent("pointerdown", { button: 0 }));
+  expect(postMessage).not.toHaveBeenCalled();
+});
+
 test("top receiver only accepts a connected child and cleans up when it is removed", async () => {
   const win = fakeWindow();
   const accepted = jest.fn().mockResolvedValue(true),
@@ -195,7 +214,11 @@ test("payload validation strips HTML and commands and rejects oversized inputs",
 
 test("a disappearing parent fails back without an unhandled message error", async () => {
   const win = fakeWindow();
-  win.parent = { postMessage: () => { throw new Error("closed"); } };
+  win.parent = {
+    postMessage: () => {
+      throw new Error("closed");
+    },
+  };
   const bridge = createSelectionFrameBridge({ win });
   await expect(bridge.forward(snapshot)).resolves.toBe(false);
   bridge.dispose();

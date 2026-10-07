@@ -641,16 +641,30 @@ export default function useSelectionController({
   useEffect(() => {
     if (!hideClickAway) return;
 
-    const handleHideBox = () => {
+    const handlePointerDown = (event) => {
+      if (
+        event.button !== 0 ||
+        isTranboxEvent(event) ||
+        isTranButtonEvent(event)
+      )
+        return;
+      // Close before a reader's overlay consumes the click or clears its old
+      // selection. Starting a new selection can open a fresh panel on mouseup.
+      clickAwayRef.current?.();
+    };
+    const handleHideBox = (event) => {
+      if (isTranboxEvent(event) || isTranButtonEvent(event)) return;
       const selection = window.getSelection();
       if (selection && selection.toString().trim() !== "") {
         return; // Ignore click away if user is selecting text on the page
       }
       setShowBox(false);
     };
-    window.addEventListener("click", handleHideBox);
+    window.addEventListener("pointerdown", handlePointerDown, true);
+    window.addEventListener("click", handleHideBox, true);
     return () => {
-      window.removeEventListener("click", handleHideBox);
+      window.removeEventListener("pointerdown", handlePointerDown, true);
+      window.removeEventListener("click", handleHideBox, true);
     };
   }, [hideClickAway]);
 

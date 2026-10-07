@@ -208,6 +208,7 @@ export function createSelectionFrameBridge({
   };
   const click = (event) => {
     if (win.parent === win) return;
+    if (event.type === "pointerdown" && event.button !== 0) return;
     // A fallback panel/trigger inside this frame is not an outside click.
     if (
       event
@@ -219,7 +220,11 @@ export function createSelectionFrameBridge({
         )
     )
       return;
-    if (win.getSelection()?.toString().trim()) return;
+    // An old selection often survives until the reader handles mousedown.
+    // Pointerdown capture must dismiss the panel before that overlay consumes
+    // the gesture. Keep click as a fallback for keyboard activation.
+    if (event.type !== "pointerdown" && win.getSelection()?.toString().trim())
+      return;
     send(win.parent, { kind: "click-away", hasSelection: false });
   };
   const observer = new win.MutationObserver(() => {
@@ -236,6 +241,7 @@ export function createSelectionFrameBridge({
   win.addEventListener("pagehide", pagehide);
   win.document.addEventListener("selectionchange", selectionchange);
   win.addEventListener("click", click, true);
+  win.addEventListener("pointerdown", click, true);
   return {
     forward,
     clear,
@@ -252,6 +258,7 @@ export function createSelectionFrameBridge({
       win.removeEventListener("pagehide", pagehide);
       win.document.removeEventListener("selectionchange", selectionchange);
       win.removeEventListener("click", click, true);
+      win.removeEventListener("pointerdown", click, true);
       pending.forEach(({ resolve, timer }) => {
         win.clearTimeout(timer);
         resolve(false);

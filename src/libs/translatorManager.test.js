@@ -1360,6 +1360,63 @@ describe("TranslatorManager SPA lifecycle", () => {
     }
   );
 
+  test.each([true, false])(
+    "new frames restore explicit page state enabled=%s",
+    async (enabled) => {
+      browser.runtime.sendMessage.mockImplementation(({ action }) =>
+        Promise.resolve(
+          action === "get_page_translation_state" ? { enabled } : 12
+        )
+      );
+      const manager = createManager({ isIframe: true });
+      manager.start();
+      await flushMutationObserver();
+      expect(
+        mockTranslatorInstances[0][enabled ? "enable" : "disable"]
+      ).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  test.each(["command", "stop", "restart"])(
+    "pending startup state cannot overwrite a newer %s",
+    async (change) => {
+      let finish;
+      browser.runtime.sendMessage.mockImplementation(({ action }) =>
+        action === "get_page_translation_state"
+          ? new Promise((resolve) => {
+              finish = resolve;
+            })
+          : Promise.resolve(12)
+      );
+      const manager = createManager({ isIframe: true });
+      manager.start();
+      const first = mockTranslatorInstances[0];
+      const finishFirst = finish;
+      if (change === "command")
+        sendRuntimeMessage({
+          action: "trans-toggle",
+          args: { enabled: false },
+        });
+      else if (change === "stop") manager.stop();
+      else manager.restart();
+      finishFirst({ enabled: true });
+      await flushMutationObserver();
+      expect(first.enable).not.toHaveBeenCalled();
+    }
+  );
+
+  test("top defaults are not an explicit page session until a translation command", () => {
+    const manager = createManager();
+    manager.start();
+    expect(
+      sendRuntimeMessage({ action: "trans-getrule" }).pageTranslationControlled
+    ).toBeUndefined();
+    sendRuntimeMessage({ action: "trans-toggle", args: { enabled: true } });
+    expect(
+      sendRuntimeMessage({ action: "trans-getrule" }).pageTranslationControlled
+    ).toBe(true);
+  });
+
   test("cleans up transbox-only runtime on stop", () => {
     const manager = createManager({ transboxOnly: true });
     manager.start();
