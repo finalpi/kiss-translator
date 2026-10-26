@@ -130,6 +130,19 @@ export default function Draggable({
   );
   const containerRef = useRef(null);
   const draggedRef = useRef(false);
+  const captureRef = useRef(null);
+  const releaseCapture = useCallback(() => {
+    const capture = captureRef.current;
+    captureRef.current = null;
+    if (!capture) return;
+    try {
+      if (capture.target.hasPointerCapture?.(capture.id))
+        capture.target.releasePointerCapture(capture.id);
+    } catch {
+      /* The target may already have been detached. */
+    }
+  }, []);
+  useEffect(() => releaseCapture, [releaseCapture]);
   const hasPendingDragSaveRef = useRef(false);
   // Set by applyTransform on its first invocation; the transition-gating
   // probe waits for it so the initial paint never animates the transform.
@@ -202,6 +215,7 @@ export default function Draggable({
       setHover(false);
       setFocusWithin(false);
       setOrigin(null);
+      releaseCapture();
       draggedRef.current = false;
       const activeElement = container.getRootNode().activeElement;
       if (container.contains(activeElement)) activeElement.blur?.();
@@ -210,17 +224,61 @@ export default function Draggable({
     const handleVisibilityChange = () => {
       if (ownerDocument.hidden) deactivate();
     };
+    const handlePointerMoveOutside = (event) => {
+      const rect = container.getBoundingClientRect();
+      if (
+        event.clientX < rect.left ||
+        event.clientX > rect.right ||
+        event.clientY < rect.top ||
+        event.clientY > rect.bottom
+      )
+        setHover(false);
+      // Recover if the browser ended the press without delivering pointerup.
+      if (event.buttons === 0 && captureRef.current) {
+        releaseCapture();
+        setOrigin(null);
+      }
+    };
+    const handleOutsidePress = (event) => {
+      if (event.composedPath().includes(container) && !captureRef.current)
+        return;
+      const rect = container.getBoundingClientRect();
+      if (
+        event.clientX >= rect.left &&
+        event.clientX <= rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY <= rect.bottom
+      )
+        return;
+      deactivate();
+    };
 
     ownerWindow.addEventListener("blur", deactivate);
+    ownerDocument.addEventListener(
+      "pointermove",
+      handlePointerMoveOutside,
+      true
+    );
+    ownerDocument.addEventListener("pointerdown", handleOutsidePress, true);
     ownerDocument.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       ownerWindow.removeEventListener("blur", deactivate);
+      ownerDocument.removeEventListener(
+        "pointermove",
+        handlePointerMoveOutside,
+        true
+      );
+      ownerDocument.removeEventListener(
+        "pointerdown",
+        handleOutsidePress,
+        true
+      );
       ownerDocument.removeEventListener(
         "visibilitychange",
         handleVisibilityChange
       );
     };
-  }, [onDeactivate, snapEdge]);
+  }, [onDeactivate, snapEdge, releaseCapture]);
 
   // Apply the current position directly to the container.
   const applyTransform = useCallback((x, y) => {
@@ -375,6 +433,7 @@ export default function Draggable({
 
   // Begin dragging and capture the initial coordinates.
   const handlePointerDown = (e) => {
+    if (!isMobile && e.button !== 0) return;
     if (
       usePaper &&
       e.target.closest?.("button, a, input, select, textarea, [role='button']")
@@ -383,7 +442,19 @@ export default function Draggable({
     }
     // Only panel controls skip dragging: the FAB handle is itself a button.
     // Capture pointer movement even after the pointer leaves the handle.
-    !isMobile && e.target.setPointerCapture(e.pointerId);
+    if (!isMobile && Number.isInteger(e.pointerId)) {
+      try {
+        // Keep capture on the clicked button, otherwise the eventual click is
+        // retargeted to the wrapper and the FAB's onClick never runs.
+        const button = e.target.closest?.("button");
+        const target =
+          button && e.currentTarget.contains(button) ? button : e.currentTarget;
+        target.setPointerCapture(e.pointerId);
+        captureRef.current = { target, id: e.pointerId };
+      } catch {
+        /* Continue without capture if this pointer has ended. */
+      }
+    }
     onStart && onStart();
     draggedRef.current = false;
     const rect = containerRef.current?.getBoundingClientRect();
@@ -437,6 +508,7 @@ export default function Draggable({
       latestEdge.current = nextEdge;
     }
     setOrigin(null);
+    releaseCapture();
   };
 
   const handleClick = (e) => {
@@ -489,6 +561,7 @@ export default function Draggable({
         onPointerMove: handlePointerMove,
         onPointerUp: handlePointerUp,
         onPointerCancel: handlePointerUp,
+        onLostPointerCapture: handlePointerUp,
       };
 
   return (

@@ -127,7 +127,13 @@ export function ContentFabContent({
 
   const closeMenu = useCallback((restoreFocus = false) => {
     setOpen(false);
-    if (restoreFocus) anchorRef.current?.focus();
+    if (restoreFocus) {
+      anchorRef.current?.focus({ preventScroll: true });
+    } else {
+      const focused = anchorRef.current?.getRootNode().activeElement;
+      if (focused === anchorRef.current || menuRef.current?.contains(focused))
+        focused?.blur();
+    }
   }, []);
 
   useEffect(() => {
@@ -184,14 +190,16 @@ export function ContentFabContent({
   // Close the menu before its transformed anchor moves away from it.
   const handleMove = useCallback(() => {
     setMoved(true);
-    closeMenu(true);
+    closeMenu();
   }, [closeMenu]);
 
   // Run an action and close the menu.
   const runAction = useCallback(
-    (action) => {
+    (action, event) => {
       processActions({ action });
-      closeMenu(true);
+      // Keyboard activation returns to the trigger; pointer activation must
+      // not pin the half-hidden button open after the pointer has left.
+      closeMenu(event?.detail === 0);
     },
     [closeMenu, processActions]
   );
@@ -213,17 +221,20 @@ export function ContentFabContent({
   }, [closeMenu]);
 
   // Ignore clicks after dragging to prevent accidental activation.
-  const handleClick = useCallback(() => {
-    if (moved) {
-      return;
-    }
-    // fabClickAction === 1 keeps the legacy direct translation action.
-    if (!opensMenu) {
-      runAction(MSG_TRANS_TOGGLE);
-      return;
-    }
-    setOpen((current) => !current);
-  }, [moved, opensMenu, runAction]);
+  const handleClick = useCallback(
+    (event) => {
+      if (moved) {
+        return;
+      }
+      // fabClickAction === 1 keeps the legacy direct translation action.
+      if (!opensMenu) {
+        runAction(MSG_TRANS_TOGGLE, event);
+        return;
+      }
+      setOpen((current) => !current);
+    },
+    [moved, opensMenu, runAction]
+  );
 
   // Close the menu and return focus to the FAB before menu items unmount.
   const handleMenuKeyDown = useCallback(
@@ -253,23 +264,23 @@ export function ContentFabContent({
     {
       label: i18n("popup_translate_page"),
       icon: TranslateRoundedIcon,
-      action: () => runAction(MSG_TRANS_TOGGLE),
+      action: (event) => runAction(MSG_TRANS_TOGGLE, event),
     },
     {
       label: i18n("text_style_alt"),
       icon: PaletteRoundedIcon,
-      action: () => runAction(MSG_TRANS_TOGGLE_STYLE),
+      action: (event) => runAction(MSG_TRANS_TOGGLE_STYLE, event),
     },
     {
       label: i18n("selection_translate"),
       icon: SelectAllRoundedIcon,
-      action: () => runAction(MSG_OPEN_TRANBOX),
+      action: (event) => runAction(MSG_OPEN_TRANBOX, event),
       disabled: !selectionEnabled,
     },
     {
       label: i18n("open_menu"),
       icon: TuneRoundedIcon,
-      action: () => runAction(MSG_POPUP_TOGGLE),
+      action: (event) => runAction(MSG_POPUP_TOGGLE, event),
     },
     {
       label: i18n("open_setting"),

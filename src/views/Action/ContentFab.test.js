@@ -208,6 +208,19 @@ describe.each(["document", "shadow root"])("ContentFab in %s", (context) => {
     expect(focusRoot.activeElement).toBe(fab());
   });
 
+  test("pointer menu actions do not leave focus pinned to the FAB", () => {
+    render();
+    clickFab();
+    act(() =>
+      menuItems()[0].dispatchEvent(
+        new MouseEvent("click", { bubbles: true, detail: 1 })
+      )
+    );
+    expect(menuItems()).toHaveLength(0);
+    expect(focusRoot.activeElement).not.toBe(fab());
+    expect(processActions).toHaveBeenCalledWith({ action: MSG_TRANS_TOGGLE });
+  });
+
   test.each(["Escape", "Tab"])(
     "%s closes the menu, restores focus, and does not reach the host page",
     (key) => {
@@ -405,7 +418,7 @@ describe.each(["document", "shadow root"])("ContentFab in %s", (context) => {
 
     expect(menuItems()).toHaveLength(0);
     expect(draggableProps.expanded).toBe(false);
-    expect(focusRoot.activeElement).toBe(fab());
+    expect(focusRoot.activeElement).not.toBe(fab());
     clickFab();
     expect(menuItems()).toHaveLength(0);
     expect(processActions).not.toHaveBeenCalled();
