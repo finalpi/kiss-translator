@@ -628,6 +628,64 @@ describe("Draggable FAB edge locking", () => {
   });
 
   // Cancellation must clear the drag because no later pointerup is guaranteed.
+  test("an outside primary press clears focus without relying on blur", () => {
+    renderFab({ handler: <button>Translate</button> });
+    const button = draggable.querySelector("button");
+    act(() => button.focus());
+    act(() =>
+      document.body.dispatchEvent(
+        new MouseEvent("pointerdown", {
+          bubbles: true,
+          clientX: 300,
+          clientY: 100,
+          button: 0,
+        })
+      )
+    );
+    expect(document.activeElement).not.toBe(button);
+    expect(draggable.style.transform).toBe("translate(580px, 200px)");
+  });
+
+  test("captures the clicked button rather than its wrapper to preserve click delivery", () => {
+    renderFab({
+      handler: (
+        <button>
+          <span>Translate</span>
+        </button>
+      ),
+    });
+    const handler = draggable.firstElementChild.firstElementChild;
+    const button = handler.querySelector("button");
+    handler.setPointerCapture = jest.fn();
+    button.setPointerCapture = jest.fn();
+    const event = new MouseEvent("pointerdown", { bubbles: true, button: 0 });
+    Object.defineProperty(event, "pointerId", { value: 7 });
+    act(() => button.firstChild.dispatchEvent(event));
+    expect(button.setPointerCapture).toHaveBeenCalledWith(7);
+    expect(handler.setPointerCapture).not.toHaveBeenCalled();
+  });
+
+  test("capture is explicitly released on completion", () => {
+    renderFab();
+    const handler = draggable.firstElementChild.firstElementChild;
+    handler.hasPointerCapture = jest.fn(() => true);
+    handler.releasePointerCapture = jest.fn();
+    const fire = (type) => {
+      const event = new MouseEvent(type, {
+        bubbles: true,
+        clientX: 10,
+        clientY: 210,
+        button: 0,
+      });
+      Object.defineProperty(event, "pointerId", { value: 7 });
+      act(() => handler.dispatchEvent(event));
+    };
+    fire("pointerdown");
+    expect(handler.setPointerCapture).toHaveBeenCalledWith(7);
+    fire("pointerup");
+    expect(handler.releasePointerCapture).toHaveBeenCalledWith(7);
+  });
+
   test("a cancelled pointer ends the drag instead of leaving it stuck", () => {
     renderFab();
     const handler = draggable.firstElementChild.firstElementChild;
