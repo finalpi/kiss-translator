@@ -1,11 +1,18 @@
+import AddIcon from "@mui/icons-material/Add";
+import RemoveIcon from "@mui/icons-material/Remove";
+import {
+  normalizeTranboxFontSize,
+  TRANBOX_MIN_FONT_SIZE,
+  TRANBOX_MAX_FONT_SIZE,
+} from "../../config/tranboxFont";
 import IconButton from "@mui/material/IconButton";
 import UnfoldLessIcon from "@mui/icons-material/UnfoldLess";
 import UnfoldMoreIcon from "@mui/icons-material/UnfoldMore";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import PushPinIcon from "@mui/icons-material/PushPin";
 import PushPinOutlinedIcon from "@mui/icons-material/PushPinOutlined";
-import LockIcon from "@mui/icons-material/Lock";
-import LockOpenIcon from "@mui/icons-material/LockOpen";
+import MyLocationIcon from "@mui/icons-material/MyLocation";
+import MyLocationOutlinedIcon from "@mui/icons-material/MyLocationOutlined";
 import CloseIcon from "@mui/icons-material/Close";
 import LightModeIcon from "@mui/icons-material/LightMode";
 import DarkModeIcon from "@mui/icons-material/DarkMode";
@@ -64,8 +71,11 @@ export default function TranslationPanelHeader({
   setHideClickAway,
   followSelection,
   setFollowSelection,
+  fontSize,
+  onFontSizeChange,
 }) {
   const i18n = useI18n();
+  const readingFontSize = normalizeTranboxFontSize(fontSize);
   const { darkMode, toggleDarkMode } = useDarkMode();
   const [showMore, setShowMore] = useState(false);
   const menuId = useId();
@@ -138,6 +148,20 @@ export default function TranslationPanelHeader({
       ownerDocument.removeEventListener("click", handleOutsideClick, true);
   }, [showMore]);
 
+  const changeFontSize = (event, delta) => {
+    const nextSize = normalizeTranboxFontSize(readingFontSize + delta);
+    if (
+      nextSize === TRANBOX_MIN_FONT_SIZE ||
+      nextSize === TRANBOX_MAX_FONT_SIZE
+    ) {
+      // Keep keyboard navigation inside the menu when this button becomes disabled.
+      const buttons =
+        event.currentTarget.parentElement.querySelectorAll("button");
+      buttons[delta < 0 ? 1 : 0]?.focus();
+    }
+    onFontSizeChange(nextSize);
+  };
+
   const handleMenuKeyDown = (event) => {
     if (event.key === "Escape" || event.key === "Tab") {
       if (event.key === "Escape") event.preventDefault();
@@ -177,14 +201,16 @@ export default function TranslationPanelHeader({
 
       {/* Right: always-visible actions. */}
       <span className="kt-tranbox-header__actions">
-        {/* Lock the panel against outside clicks. */}
+        {/* Pinning keeps the panel visible when focus moves outside it. */}
         {setHideClickAway && (
           <IconButton
             title={i18n("btn_tip_click_away")}
-            aria-pressed={hideClickAway}
+            aria-label={i18n("btn_tip_click_away")}
+            aria-pressed={!hideClickAway}
+            color={hideClickAway ? "default" : "primary"}
             onClick={() => setHideClickAway((pre) => !pre)}
           >
-            {hideClickAway ? <LockOpenIcon /> : <LockIcon />}
+            {hideClickAway ? <PushPinOutlinedIcon /> : <PushPinIcon />}
           </IconButton>
         )}
 
@@ -271,7 +297,11 @@ export default function TranslationPanelHeader({
               aria-checked={followSelection}
               onClick={() => setFollowSelection((pre) => !pre)}
             >
-              {followSelection ? <PushPinOutlinedIcon /> : <PushPinIcon />}
+              {followSelection ? (
+                <MyLocationIcon />
+              ) : (
+                <MyLocationOutlinedIcon />
+              )}
               {i18n("btn_tip_follow_selection")}
             </button>
           )}
@@ -292,6 +322,36 @@ export default function TranslationPanelHeader({
             )}
             {i18n("btn_tip_dark_mode")}
           </button>
+          {onFontSizeChange && (
+            <div
+              className="kt-tranbox-header__font-size"
+              role="group"
+              aria-label={i18n("tranbox_font_size")}
+            >
+              <span>{i18n("tranbox_font_size")}</span>
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                aria-label={i18n("tranbox_font_decrease")}
+                disabled={readingFontSize <= TRANBOX_MIN_FONT_SIZE}
+                onClick={(event) => changeFontSize(event, -1)}
+              >
+                <RemoveIcon />
+              </button>
+              <output aria-live="polite">{readingFontSize}px</output>
+              <button
+                type="button"
+                role="menuitem"
+                tabIndex={-1}
+                aria-label={i18n("tranbox_font_increase")}
+                disabled={readingFontSize >= TRANBOX_MAX_FONT_SIZE}
+                onClick={(event) => changeFontSize(event, 1)}
+              >
+                <AddIcon />
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

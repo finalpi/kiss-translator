@@ -72,6 +72,9 @@ jobs:
           path: build
           include-hidden-files: true
   deploy-web:
+    concurrency:
+      group: deploy-website
+      cancel-in-progress: false
     needs: [build, sign-firefox]
     runs-on: ubuntu-24.04
     permissions:

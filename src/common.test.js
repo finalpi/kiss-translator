@@ -39,12 +39,16 @@ jest.mock("./subtitle/subtitle", () => ({
   runSubtitle: jest.fn(),
 }));
 
-jest.mock("./libs/log", () => ({
-  logger: {
-    setLevel: jest.fn(),
-    info: jest.fn(),
-  },
-}));
+jest.mock("./libs/log", () =>
+  jest.requireActual("./testUtils/scopedLogMock").withScopedLogMock(
+    (() => ({
+      logger: {
+        setLevel: jest.fn(),
+        info: jest.fn(),
+      },
+    }))()
+  )
+);
 
 jest.mock("./libs/injector", () => ({
   injectInlineJs: jest.fn(),
@@ -127,6 +131,45 @@ describe("common iframe startup", () => {
       transOpen: "true",
       highlightWords: "-",
     });
+  });
+
+  test("refreshes APIs changed during rule loading before a runtime can translate", async () => {
+    const initial = {
+      blacklist: "",
+      logLevel: 1,
+      transApis: [{ apiSlug: "old", isDisabled: false }],
+      mouseHoverSetting: { useMouseHover: true },
+    };
+    const latest = {
+      ...initial,
+      transApis: [
+        { apiSlug: "old", isDisabled: true },
+        { apiSlug: "first", sortOrder: -1 },
+      ],
+    };
+    getSettingWithDefault
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(latest);
+    let finishRules;
+    matchRule.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishRules = resolve;
+      })
+    );
+    const startup = run();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(TranslatorManager).not.toHaveBeenCalled();
+    finishRules({ transOpen: "true", highlightWords: "-" });
+    await startup;
+    expect(TranslatorManager.mock.calls[0][0].setting.transApis).toEqual(
+      latest.transApis
+    );
+    expect(
+      TranslatorManager.mock.calls[0][0].setting.mouseHoverSetting.useMouseHover
+    ).toBe(true);
+    expect(initial.transApis).toEqual([{ apiSlug: "old", isDisabled: false }]);
+    expect(getSettingWithDefault).toHaveBeenCalledTimes(2);
   });
 
   afterEach(() => {

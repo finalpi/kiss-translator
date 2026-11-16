@@ -11,7 +11,7 @@ import { Translator } from "./translator";
 import { InputTranslator } from "./inputTranslate";
 import { TransboxManager } from "./tranbox";
 import { shortcutRegister } from "./shortcut";
-import { sendIframeMsg } from "./iframe";
+import { sendIframeMsg, sendTopMsg } from "./iframe";
 import {
   EVENT_KISS_INNER,
   EVENT_KISS_TRANSLATOR,
@@ -23,6 +23,7 @@ import { touchTapListener } from "./touch";
 import { PopupManager } from "./popupManager";
 import { FabManager } from "./fabManager";
 import { RuleEditorManager } from "./ruleEditorManager";
+import { ImageTranslateManager } from "./imageTranslate/imageTranslateManager";
 import {
   OPT_SHORTCUT_TRANSLATE,
   OPT_SHORTCUT_TRANSONLY,
@@ -40,13 +41,16 @@ import {
   MSG_RULE_EDITOR,
   MSG_MOUSEHOVER_TOGGLE,
   MSG_TRANSINPUT_TOGGLE,
+  STOKEY_SETTING,
 } from "../config";
 import { logger } from "./log";
 import { getPopupDocumentIdentity } from "./popupDocument";
+import { isSameStorageValue } from "./storageEquality";
 import {
   MSG_GET_FRAME_ID,
   MSG_VALIDATE_DOCUMENT,
   MSG_GET_PAGE_TRANSLATION_STATE,
+  MSG_IMAGE_SCREENSHOT,
 } from "../config/msg";
 
 /**
@@ -99,6 +103,9 @@ export default class TranslatorManager {
   #windowMessageHandler = null;
   #pageRestoreHandler = null;
   #spaNavigationHandler = null;
+  #storageChangeHandler = null;
+  #storageChanges = null;
+  #storageRevision = 0;
 
   // 运行期子模块实例。它们可能挂载 DOM，因此随 restart 销毁并重建。
   _translator = null;
@@ -107,6 +114,7 @@ export default class TranslatorManager {
   _popupManager = null;
   _fabManager = null;
   _ruleEditorManager = null;
+  _imageTranslateManager = null;
 
   /**
    * 保存启动参数并绑定全局 handler。
@@ -125,6 +133,11 @@ export default class TranslatorManager {
     transboxOnly = false,
   }) {
     this.#setting = this.#cloneConfig(setting);
+    const touchMode = setting?.mouseHoverSetting?.touchMode;
+    this.#touchMode =
+      supportsTouch() && ["tap", "swipe"].includes(touchMode)
+        ? touchMode
+        : "off";
     this.#rule = this.#cloneConfig(rule);
     this.#fabConfig = this.#cloneConfig(fabConfig);
     this.#favWords = this.#cloneConfig(favWords);
@@ -137,6 +150,7 @@ export default class TranslatorManager {
     this.#windowMessageHandler = this.#handleWindowMessage.bind(this);
     this.#pageRestoreHandler = this.#handlePageRestore.bind(this);
     this.#spaNavigationHandler = this.#handleSpaNavigation.bind(this);
+    this.#storageChangeHandler = this.#handleStorageChange.bind(this);
   }
 
   /**
@@ -147,20 +161,25 @@ export default class TranslatorManager {
    */
   start() {
     if (this.#isActive) {
-      logger.info("TranslatorManager is already started.");
+      logger
+        .child("translator-manager")
+        .debug("TranslatorManager is already started.");
       return;
     }
 
     this.#createRuntimeModules();
     this.#initializeDocumentInfo();
     this.#setupMessageListeners();
+    this.#setupStorageListener();
     if (!this.#transboxOnly) {
       this.#setupTouchOperations();
     }
 
-    if (!this.#transboxOnly && !this.#isIframe && this.#isUserscript) {
+    if (!this.#transboxOnly && this.#isUserscript) {
       this.#registerShortcuts();
-      this.#registerMenus();
+      if (!this.#isIframe) {
+        this.#registerMenus();
+      }
     }
 
     if (!this.#transboxOnly) {
@@ -168,7 +187,7 @@ export default class TranslatorManager {
     }
     this.#isActive = true;
     this.#restorePageTranslationState();
-    logger.info("TranslatorManager started.");
+    logger.child("translator-manager").info("TranslatorManager started.");
   }
 
   /**
@@ -180,9 +199,12 @@ export default class TranslatorManager {
    */
   restart(reason = "spa-navigation") {
     if (!this.#isActive) {
-      logger.info("TranslatorManager is not running.");
+      logger
+        .child("translator-manager")
+        .debug("TranslatorManager is not running.");
       return;
     }
+    this.#storageRevision += 1;
 
     // 必须在 destroy 前快照：Translator.stop() 会把实例内 rule.transOpen 改成 false。
     const state = this.#snapshotRuntimeState();
@@ -196,7 +218,9 @@ export default class TranslatorManager {
     this.#createRuntimeModules();
     this.#refreshDocumentElementObserver();
     this.#restorePageTranslationState();
-    logger.info(`TranslatorManager restarted: ${reason}`);
+    logger
+      .child("translator-manager")
+      .debug("TranslatorManager restarted:", reason);
   }
 
   /**
@@ -207,12 +231,17 @@ export default class TranslatorManager {
    */
   stop() {
     if (!this.#isActive) {
-      logger.info("TranslatorManager is not running.");
+      logger
+        .child("translator-manager")
+        .debug("TranslatorManager is not running.");
       return;
     }
+    this.#storageRevision += 1;
 
     this.#clearSpaRefreshTimer();
     this.#teardownSpaListeners();
+    this.#storageChanges?.removeListener(this.#storageChangeHandler);
+    this.#storageChanges = null;
 
     window.removeEventListener(
       EVENT_KISS_TRANSLATOR,
@@ -240,7 +269,7 @@ export default class TranslatorManager {
 
     this.#destroyRuntimeModules();
     this.#isActive = false;
-    logger.info("TranslatorManager stopped.");
+    logger.child("translator-manager").info("TranslatorManager stopped.");
   }
 
   /**
@@ -251,9 +280,10 @@ export default class TranslatorManager {
    */
   #createRuntimeModules() {
     if (this.#transboxOnly) {
-      this._transboxManager = new TransboxManager(
-        this.#cloneConfig(this.#setting)
-      );
+      this._transboxManager = new TransboxManager({
+        ...this.#cloneConfig(this.#setting),
+        rule: this.#cloneConfig(this.#rule),
+      });
       return;
     }
 
@@ -267,9 +297,10 @@ export default class TranslatorManager {
 
     this.#touchMode = this._translator.setTouchMode?.(this.#touchMode) || "off";
 
-    this._transboxManager = new TransboxManager(
-      this.#cloneConfig(this.#setting)
-    );
+    this._transboxManager = new TransboxManager({
+      ...this.#cloneConfig(this.#setting),
+      rule: this.#cloneConfig(this.#rule),
+    });
 
     // Frames keep page, selection, and hover translation, but no top-level UI.
     if (!this.#isIframe) {
@@ -305,6 +336,19 @@ export default class TranslatorManager {
         processActions: this.#processActions.bind(this),
         fabConfig: this.#cloneConfig(this.#fabConfig),
         getSelectionEnabled: () => Boolean(this._transboxManager?.isEnabled()),
+        onVisibilityChange: (isHide) => {
+          // Persist the confirmed page preference across SPA runtime recreation.
+          this.#fabConfig = { ...this.#fabConfig, isHide };
+        },
+      });
+      this._imageTranslateManager = new ImageTranslateManager({
+        setting: this.#cloneConfig(this.#setting),
+        rule: this.#cloneConfig(this.#rule),
+        isIframe: this.#isIframe,
+        onScreenshotSessionChange: (active) => {
+          if (active) this._fabManager?.suspend();
+          else this._fabManager?.resume();
+        },
       });
     }
   }
@@ -321,6 +365,7 @@ export default class TranslatorManager {
     this._ruleEditorManager?.destroy();
     this._ruleEditorManager = null;
     this._popupManager?.destroy();
+    this._imageTranslateManager?.destroy();
     this._fabManager?.destroy();
     this._transboxManager?.disable();
     this._inputTranslator?.disable();
@@ -331,6 +376,7 @@ export default class TranslatorManager {
     this._inputTranslator = null;
     this._popupManager = null;
     this._fabManager = null;
+    this._imageTranslateManager = null;
   }
 
   /**
@@ -345,7 +391,9 @@ export default class TranslatorManager {
       try {
         return globalThis.structuredClone(value);
       } catch (err) {
-        logger.debug("structuredClone failed, using JSON clone.", err);
+        logger
+          .child("translator-manager")
+          .debug("structuredClone failed, using JSON clone.", err);
       }
     }
     return JSON.parse(JSON.stringify(value));
@@ -621,7 +669,9 @@ export default class TranslatorManager {
 
       this._translator?.rescan();
       this.#notifyTouchState();
-      logger.info(`TranslatorManager rescanned: ${refreshReason}`);
+      logger
+        .child("translator-manager")
+        .debug("TranslatorManager rescanned:", refreshReason);
     }, 0);
   }
 
@@ -664,6 +714,88 @@ export default class TranslatorManager {
     }
 
     window.addEventListener(EVENT_KISS_TRANSLATOR, this.#windowMessageHandler);
+  }
+
+  /** Keep the active document's API list current without recreating its UI. */
+  #setupStorageListener() {
+    const storageChanges = browser?.storage?.onChanged;
+    if (
+      this.#isUserscript ||
+      typeof storageChanges?.addListener !== "function" ||
+      typeof storageChanges?.removeListener !== "function"
+    ) {
+      return;
+    }
+    storageChanges.addListener(this.#storageChangeHandler);
+    this.#storageChanges = storageChanges;
+    const storageArea = browser?.storage?.local;
+    if (typeof storageArea?.get !== "function") return;
+
+    // Settings can change after common.run reads them but before this listener
+    // starts. Read once after subscribing, without replacing newer live state.
+    const revision = ++this.#storageRevision;
+    Promise.resolve()
+      .then(() => storageArea.get(STOKEY_SETTING))
+      .then((stored) => {
+        if (
+          !this.#isActive ||
+          revision !== this.#storageRevision ||
+          this.#storageChanges !== storageChanges
+        ) {
+          return;
+        }
+        this.#handleStorageChange(
+          { [STOKEY_SETTING]: { newValue: stored?.[STOKEY_SETTING] } },
+          "local"
+        );
+      })
+      .catch((error) =>
+        logger
+          .child("translator-manager")
+          .debug("Read current API settings", error)
+      );
+  }
+
+  #handleStorageChange(changes, areaName) {
+    if (!this.#isActive || areaName !== "local") return;
+    if (!Object.prototype.hasOwnProperty.call(changes || {}, STOKEY_SETTING)) {
+      return;
+    }
+    this.#storageRevision += 1;
+    const value = changes?.[STOKEY_SETTING]?.newValue;
+    if (typeof value !== "string") return;
+
+    let setting;
+    try {
+      setting = JSON.parse(value);
+    } catch (_error) {
+      return;
+    }
+    if (
+      !setting ||
+      typeof setting !== "object" ||
+      Array.isArray(setting) ||
+      !Array.isArray(setting.transApis) ||
+      setting.transApis.some(
+        (api) =>
+          !api ||
+          typeof api !== "object" ||
+          Array.isArray(api) ||
+          typeof api.apiSlug !== "string" ||
+          !api.apiSlug.trim()
+      )
+    ) {
+      return;
+    }
+    this._imageTranslateManager?.updateSetting(setting);
+    if (isSameStorageValue(setting.transApis, this.#setting?.transApis)) {
+      return;
+    }
+
+    // Only the API list is live; runtime feature toggles retain their state.
+    const transApis = this.#cloneConfig(setting.transApis);
+    this.#setting = { ...this.#setting, transApis };
+    this._translator?.updateApiSettings(this.#cloneConfig(transApis));
   }
 
   /**
@@ -712,7 +844,7 @@ export default class TranslatorManager {
    * 处理同窗口 CustomEvent 通信。
    */
   #handleWindowMessage(event) {
-    logger.debug("handle window message:", event);
+    logger.child("translator-manager").debug("handle window message:", event);
     this.#processActions(event.detail);
   }
 
@@ -803,29 +935,41 @@ export default class TranslatorManager {
 
   /**
    * 注册页面级快捷键，并保存每个快捷键的清理函数。
+   *
+   * 键盘事件只会到达获得焦点的文档。Userscript 没有 background 统一分发，
+   * 所以子 iframe 也要注册快捷键，并把动作交给顶层页面；顶层页面执行后
+   * 再逐层广播给所有 iframe。子 iframe 不在本地执行，避免广播回来时重复切换。
    */
   #registerShortcuts() {
     const { shortcuts, tranboxSetting } = this._translator.setting;
+    const run = this.#isIframe
+      ? (action) => sendTopMsg(action)
+      : (action) => this.#processActions({ action });
     this.#clearShortcuts = [
       shortcutRegister(shortcuts[OPT_SHORTCUT_TRANSLATE], () =>
-        this.#processActions({ action: MSG_TRANS_TOGGLE })
+        run(MSG_TRANS_TOGGLE)
       ),
       shortcutRegister(shortcuts[OPT_SHORTCUT_TRANSONLY], () =>
-        this.#processActions({ action: MSG_TRANS_TOGGLE_ONLY })
+        run(MSG_TRANS_TOGGLE_ONLY)
       ),
       shortcutRegister(shortcuts[OPT_SHORTCUT_STYLE], () =>
-        this.#processActions({ action: MSG_TRANS_TOGGLE_STYLE })
+        run(MSG_TRANS_TOGGLE_STYLE)
       ),
       shortcutRegister(shortcuts[OPT_SHORTCUT_POPUP], () =>
-        this.#processActions({ action: MSG_POPUP_TOGGLE })
-      ),
-      shortcutRegister(shortcuts[OPT_SHORTCUT_SETTING], () =>
-        window.open(process.env.REACT_APP_OPTIONSPAGE, "_blank")
+        run(MSG_POPUP_TOGGLE)
       ),
       shortcutRegister(tranboxSetting?.tranboxShortcut, () =>
-        this.#processActions({ action: MSG_TRANSBOX_TOGGLE })
+        run(MSG_TRANSBOX_TOGGLE)
       ),
     ];
+    // 设置页只从顶层页面打开：沙箱 iframe 可能禁止弹出新窗口。
+    if (!this.#isIframe) {
+      this.#clearShortcuts.push(
+        shortcutRegister(shortcuts[OPT_SHORTCUT_SETTING], () =>
+          window.open(process.env.REACT_APP_OPTIONSPAGE, "_blank")
+        )
+      );
+    }
   }
 
   /**
@@ -919,6 +1063,9 @@ export default class TranslatorManager {
         ["off", "tap", "swipe"].includes(args?.mode)
       ) {
         this.#touchMode = this._translator?.setTouchMode(args.mode) || "off";
+        // Saved modes also start in child frames, which have no status bar.
+        // Relay off even for extension commands so their controls can stop them.
+        if (args.mode === "off") sendIframeMsg(action, args);
       }
       const touchTranslate = this.#getTouchState();
       this.#notifyTouchState();
@@ -993,7 +1140,7 @@ export default class TranslatorManager {
       sendIframeMsg(action, args);
     }
 
-    logger.debug("process action:", action, args);
+    logger.child("translator-manager").debug("process action:", action, args);
 
     switch (action) {
       case MSG_TRANS_TOGGLE:
@@ -1015,6 +1162,9 @@ export default class TranslatorManager {
         break;
       case MSG_TRANS_PUTRULE:
         this._translator?.updateRule(args);
+        this.#rule = this.#cloneConfig(this._translator.rule);
+        this._imageTranslateManager?.updateRule(args);
+        this._transboxManager?.update({ rule: this.#cloneConfig(this.#rule) });
         break;
       case MSG_OPEN_TRANBOX:
         document.dispatchEvent(
@@ -1025,6 +1175,9 @@ export default class TranslatorManager {
         break;
       case MSG_POPUP_TOGGLE:
         this._popupManager?.toggle();
+        break;
+      case MSG_IMAGE_SCREENSHOT:
+        this._imageTranslateManager?.startScreenshot();
         break;
       case MSG_TRANSBOX_TOGGLE:
         if (typeof args?.enabled === "boolean") {
@@ -1081,7 +1234,9 @@ export default class TranslatorManager {
         this._inputTranslator?.handleTranslate();
         break;
       default:
-        logger.info(`Message action is unavailable: ${action}`);
+        logger
+          .child("translator-manager")
+          .info("Message action is unavailable:", action);
         return { error: `Message action is unavailable: ${action}` };
     }
     return this.#getRuntimeResponse();

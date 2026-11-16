@@ -1,5 +1,6 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import Box from "@mui/material/Box";
+import { panelCursor } from "../styles/cursors";
 
 // 命中热区 24×24，大于 18×18 视觉弧线：按哪里能触发由代码定义，跨浏览器一致。
 const HOT_ZONE_PX = 24;
@@ -12,8 +13,7 @@ export const MIN_TARGET_HEIGHT_PX = 40;
 // 后内容高度恰为单行 23px，保证锁定下限处文字不被手柄热区遮挡。
 // 仅用于锁定/记忆钳制路径（clampGripMemoryHeight / clampHeight / 拖拽托底）；
 // 未锁定口径继续使用 MIN_TARGET_HEIGHT_PX。
-export const LOCKED_MIN_TARGET_HEIGHT_PX =
-  MIN_TARGET_HEIGHT_PX + HOT_ZONE_PX;
+export const LOCKED_MIN_TARGET_HEIGHT_PX = MIN_TARGET_HEIGHT_PX + HOT_ZONE_PX;
 // 方向键单次步进（Shift ×4）。
 const KEYBOARD_STEP_PX = 12;
 // 高度上界相对视口底部的安全留白。
@@ -541,10 +541,7 @@ export default function TextareaResizeGrip({
     // 播报上界与实际钳制上界同步：窗口 resize / 滚动祖先钳制后，
     // aria-valuemax 不再停留在初始视口保守值。
     setAriaValueMax(max);
-    return Math.min(
-      Math.max(rounded, LOCKED_MIN_TARGET_HEIGHT_PX),
-      max
-    );
+    return Math.min(Math.max(rounded, LOCKED_MIN_TARGET_HEIGHT_PX), max);
   };
 
   // 会话终止共用路径：pointerup/cancel/lostpointercapture（经 endSession）
@@ -730,9 +727,11 @@ export default function TextareaResizeGrip({
   return (
     <Box
       role="slider"
-      // kt-resize-grip：焦点指示为 m3.js 显式规则（B7）——鼠标 :focus
-      // 零指示，键盘 Tab 命中 :focus-visible 3px 主色环，不再静默依赖
-      // 全局级联（Shadow DOM 或全局规则调整不会丢失焦点环）。
+      // kt-resize-grip：焦点指示为 m3.js 显式规则——现代内核鼠标 :focus
+      // 零指示，键盘 Tab 命中 :focus-visible 画 3px 主色内嵌环（inset，
+      // 不外扩，以免被右下角操作簇叠成缺角）；无 :focus-visible 支持的
+      // 旧内核经 :focus 基格兜底画同一内嵌环。不再静默依赖全局级联
+      // （Shadow DOM 或全局规则调整不会丢失焦点环）。
       className="kt-resize-grip"
       // 手柄仅响应 clientY 与 ArrowUp/ArrowDown 调整高度，slider 方向
       // 语义为 vertical（光标形态 cursor: "ns-resize" 同口径）。
@@ -768,7 +767,7 @@ export default function TextareaResizeGrip({
         height: HOT_ZONE_PX,
         // 禁用字段（如 preset 提示词）内保持手柄可交互。
         pointerEvents: "auto",
-        cursor: "ns-resize",
+        cursor: panelCursor("ns"),
         touchAction: "none",
         borderRadius: "4px",
         // 颜色经 currentColor 下传给 SVG 弧线：基础 onSurfaceVariant

@@ -3,7 +3,7 @@ import FavoriteIcon from "@mui/icons-material/Favorite";
 import FavoriteBorderIcon from "@mui/icons-material/FavoriteBorder";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useFavWords } from "../../hooks/FavWords";
-import { kissLog } from "../../libs/log";
+import { logger } from "../../libs/log";
 import { useSetting } from "../../hooks/Setting";
 import { EVENT_FAVORITE_WORD_CHANGE } from "../../config";
 import { normalizeWordForms } from "../../libs/favoriteWordForms";
@@ -28,12 +28,14 @@ function notifyFavorite(word, receipt) {
  * @param {Object} props
  * @param {string} props.word - Word to add to or remove from favorites.
  * @param {string} props.title - Hover tooltip text.
+ * @param {{sentence?: string, url?: string}|null} props.source - Optional webpage source metadata.
  */
 export default function FavBtn({
   word,
   title,
   forms = EMPTY_FORMS,
   ready = true,
+  source = null,
 }) {
   // Read favorite words and the toggle action from useFavWords.
   const { favWords, toggleFav, mergeWords, updateWordForms, isLoading } =
@@ -46,6 +48,10 @@ export default function FavBtn({
   const isFavorite = Boolean(favWords[word]);
   const autoCollect =
     context === "tranbox" && setting?.tranboxSetting?.autoFavWord;
+  const hasSource = Boolean(
+    (typeof source?.sentence === "string" && source.sentence.trim()) ||
+      (typeof source?.url === "string" && source.url.trim())
+  );
 
   // Toggle the favorite state on click.
   const saveFavorite = useCallback(
@@ -55,21 +61,26 @@ export default function FavBtn({
       try {
         setLoading(true);
         const receipt = await (collectOnly
-          ? forms.length
-            ? mergeWords([word], { [word]: forms })
+          ? forms.length || hasSource
+            ? mergeWords([word], {
+                ...(forms.length ? { [word]: forms } : {}),
+                ...(hasSource ? { source } : {}),
+              })
             : mergeWords([word])
-          : forms.length
-            ? toggleFav(word, null, "", "", [], forms)
+          : forms.length || hasSource
+            ? forms.length
+              ? toggleFav(word, null, "", "", [], forms, source)
+              : toggleFav(word, null, "", "", [], source)
             : toggleFav(word));
         notifyFavorite(word, receipt);
       } catch (err) {
-        kissLog("set fav", err);
+        logger.child("fav-btn").info("set fav", err);
       } finally {
         pending.current = false;
         setLoading(false);
       }
     },
-    [mergeWords, toggleFav, word, isLoading, forms, ready]
+    [mergeWords, toggleFav, word, isLoading, forms, ready, hasSource, source]
   );
 
   useEffect(() => {
@@ -111,7 +122,9 @@ export default function FavBtn({
       .then((receipt) => {
         if (receipt.changed) notifyFavorite(word, receipt);
       })
-      .catch((err) => kissLog("update favorite forms", err))
+      .catch((err) =>
+        logger.child("fav-btn").info("update favorite forms", err)
+      )
       .finally(() => {
         pending.current = false;
         setLoading(false);

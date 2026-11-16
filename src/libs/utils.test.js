@@ -1,8 +1,9 @@
-import { parseAITerms } from "./utils";
+import { parseAITerms, stripMarkdownCodeBlock } from "./utils";
 import { parseTerms } from "./terms";
 
-// parseAITerms 纯函数单元测试（Task 1）
-// 目标：锁定现状（含与 parseTerms 的既定差异）为预期行为，不改解析语义。
+// parseAITerms 纯函数单元测试
+// 目标：锁定修复后的目标语义（首个逗号分隔、重复 key 先出现者优先），
+// 并回归既有不变式（行分隔符、空 key 过滤、空值、trim、非字符串输入）。
 describe("parseAITerms", () => {
   test("empty string and non-string input return {}", () => {
     expect(parseAITerms("")).toEqual({});
@@ -23,24 +24,29 @@ describe("parseAITerms", () => {
     });
   });
 
-  test("comma semantics: key is text before FIRST comma, extra segments are silently dropped", () => {
-    // "a,b,c" -> key "a", value "b", the trailing ",c" is dropped (contrast with parseTerms lastIndexOf)
-    expect(parseAITerms("a,b,c")).toEqual({ a: "b" });
-    expect(parseAITerms("a,b,c\nd,e,f")).toEqual({ a: "b", d: "e" });
+  test("comma semantics: key is text before FIRST comma, everything after it (incl. commas) is the value", () => {
+    // "a,b,c" -> key "a", value "b,c" (the first comma separates; contrast with parseTerms lastIndexOf)
+    expect(parseAITerms("a,b,c")).toEqual({ a: "b,c" });
+    expect(parseAITerms("a,b,c\nd,e,f")).toEqual({ a: "b,c", d: "e,f" });
+    expect(parseAITerms("API,接口,应用程序接口")).toEqual({
+      API: "接口,应用程序接口",
+    });
   });
 
-  test("comma-in-key differs from parseTerms: AI uses split(',') first-comma, local uses lastIndexOf", () => {
-    // AI terms: key cannot contain a comma (first comma separates, trailing dropped)
-    expect(parseAITerms("a,b,c")).toEqual({ a: "b" });
+  test("value-with-comma differs from parseTerms: AI keeps text after first comma, local splits at lastIndexOf", () => {
+    // AI terms: value keeps everything after the first comma
+    expect(parseAITerms("a,b,c")).toEqual({ a: "b,c" });
     // Local terms: key CAN contain a comma (lastIndexOf splits at the last comma)
     const { terms } = parseTerms("a,b,c");
     expect(terms[0].key).toBe("a,b");
     expect(terms[0].value).toBe("c");
   });
 
-  test("last-wins dedup: later entry overwrites earlier same key (Object.fromEntries)", () => {
-    expect(parseAITerms("a,1\na,2")).toEqual({ a: "2" });
-    expect(parseAITerms("a,1;a,2")).toEqual({ a: "2" });
+  test("first-wins dedup: later duplicate entries with the same key are silently ignored", () => {
+    expect(parseAITerms("a,1\na,2")).toEqual({ a: "1" });
+    expect(parseAITerms("a,1;a,2")).toEqual({ a: "1" });
+    expect(parseAITerms("a,1\na,2\na,3")).toEqual({ a: "1" });
+    expect(parseAITerms("a,1\nb,2;a,3")).toEqual({ a: "1", b: "2" });
   });
 
   test("does no regex validation, no sorting, and produces no diagnostics (contrast with parseTerms)", () => {
@@ -58,5 +64,66 @@ describe("parseAITerms", () => {
   test("empty key lines are filtered out", () => {
     expect(parseAITerms("a,1\n,value\nb,2")).toEqual({ a: "1", b: "2" });
     expect(parseAITerms(",value")).toEqual({});
+  });
+
+  test("regression invariants: no-comma lines, empty values, segment trimming", () => {
+    expect(parseAITerms("solo")).toEqual({ solo: "" });
+    expect(parseAITerms("a,")).toEqual({ a: "" });
+    expect(parseAITerms("  a  ,  b  ")).toEqual({ a: "b" });
+    expect(parseAITerms("  API  ,  接口  ,  备注  ")).toEqual({
+      API: "接口  ,  备注",
+    });
+    expect(parseAITerms("__proto__,x")).toEqual({ ["__proto__"]: "x" });
+    expect(parseAITerms("a,1\n  \nb,2")).toEqual({ a: "1", b: "2" });
+    expect(parseAITerms("a,1\r\nb,2")).toEqual({ a: "1", b: "2" });
+  });
+});
+
+describe("stripMarkdownCodeBlock", () => {
+  test.each([
+    '[{"i":0,"t":"你好"}]',
+    "[1,2,3]",
+    '{"a": 1}',
+    '<t id="0">你好</t>',
+    "译文内容",
+    "12345",
+  ])("preserves adjacent body content: %s", (body) => {
+    expect(stripMarkdownCodeBlock("```" + body + "```")).toBe(body);
+    expect(stripMarkdownCodeBlock("```" + body + "\n```")).toBe(body);
+    expect(stripMarkdownCodeBlock("```" + body + "```", true)).toBe(
+      body + "```"
+    );
+  });
+
+  test.each(["", "plain text", '{"a": 1}', "译文内容"])(
+    "preserves unfenced input: %s",
+    (text) => {
+      expect(stripMarkdownCodeBlock(text)).toBe(text);
+      expect(stripMarkdownCodeBlock(text, true)).toBe(text);
+    }
+  );
+
+  test("strips a fenced block whose language id contains +, #, digits, or a hyphen", () => {
+    expect(stripMarkdownCodeBlock("```c++\nint x = 1;\n```")).toBe(
+      "int x = 1;"
+    );
+    expect(stripMarkdownCodeBlock("```C++\nint x = 1;\n```")).toBe(
+      "int x = 1;"
+    );
+    expect(stripMarkdownCodeBlock("```c#\nvar x = 1;\n```")).toBe("var x = 1;");
+    expect(stripMarkdownCodeBlock("```objective-c\nint x = 1;\n```")).toBe(
+      "int x = 1;"
+    );
+    expect(stripMarkdownCodeBlock("```json5\n{x: 1}\n```")).toBe("{x: 1}");
+  });
+
+  test("still strips plain and letter-only fences, including start-only mode", () => {
+    expect(stripMarkdownCodeBlock("```js\nconst x = 1;\n```")).toBe(
+      "const x = 1;"
+    );
+    expect(stripMarkdownCodeBlock("```\nplain\n```")).toBe("plain");
+    expect(stripMarkdownCodeBlock("```c++\nint x = 1;\n```", true)).toBe(
+      "int x = 1;\n```"
+    );
   });
 });

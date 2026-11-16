@@ -8,6 +8,7 @@ import { getCurTab, sendBgMsg } from "../../libs/msg";
 import { MSG_FIT_SEPARATE_WINDOW, STOKEY_SETTING } from "../../config";
 import { SEPARATE_WINDOW_CONTENT_WIDTH } from "../../config/app";
 import { loadPopupData } from "./loadData";
+import { tryClearCaches } from "../../libs/cache";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 let mockIsFirefox = false;
@@ -47,11 +48,18 @@ jest.mock("../../libs/msg", () => ({
   sendBgMsg: jest.fn(),
 }));
 jest.mock("./loadData", () => ({ loadPopupData: jest.fn() }));
+jest.mock("../../libs/cache", () => ({ tryClearCaches: jest.fn() }));
+jest.mock("./disabledPage", () => ({ loadDisabledPopupData: jest.fn() }));
 jest.mock("./PopupCont", () => {
   const React = require("react");
   return () => React.createElement("div", { "data-testid": "page-panel" });
 });
-jest.mock("./Header", () => () => null);
+jest.mock(
+  "./Header",
+  () =>
+    ({ children }) =>
+      children
+);
 jest.mock("../Selection/TranForm", () => {
   const React = require("react");
   return ({
@@ -60,6 +68,11 @@ jest.mock("../Selection/TranForm", () => {
     syncExternalTextWhileEditing,
     simpleStyle,
     configActions,
+    enDict,
+    enSug,
+    aiDictApiSlug,
+    aiDictPromptSlug,
+    ttsApiSlug,
   }) =>
     React.createElement(
       "div",
@@ -68,11 +81,18 @@ jest.mock("../Selection/TranForm", () => {
         "data-auto-focus": String(autoFocusInput),
         "data-sync-external": String(syncExternalTextWhileEditing),
         "data-simple-style": String(Boolean(simpleStyle)),
+        "data-en-dict": String(enDict),
+        "data-en-sug": String(enSug),
+        "data-ai-dict-api": String(aiDictApiSlug),
+        "data-ai-dict-prompt": String(aiDictPromptSlug),
+        "data-tts-api": String(ttsApiSlug),
       },
       configActions,
       React.createElement("span", { "data-testid": "source-text" }, text)
     );
 });
+
+jest.mock("./PopupTextPanel", () => jest.requireMock("../Selection/TranForm"));
 
 const setting = {
   autoTranslateClipboard: true,
@@ -85,6 +105,7 @@ const setting = {
     toLang2: "en",
     aiDictApiSlug: "-",
     aiDictPromptSlug: "-",
+    ttsApiSlug: "cloud-tts",
   },
   transApis: [],
   langDetector: "-",
@@ -354,6 +375,8 @@ describe("shared translation panel hosts", () => {
     expect(menuItems.map((button) => button.textContent)).toEqual([
       "btn_tip_simple_style",
       "btn_tip_dark_mode",
+      "",
+      "",
     ]);
     // Empty windows must keep their input available.
     expect(menuItems[0].disabled).toBe(true);
@@ -363,19 +386,53 @@ describe("shared translation panel hosts", () => {
     ).toBe("false");
   });
 
-  test("embeds the same content without a second header in the popup tab", async () => {
+  test("uses the compact text editor without a second header in the popup tab", async () => {
     view = renderTrantab();
     await flushEffects();
 
     expect(
       view.container.querySelector(".kt-translation-panel--embedded")
-    ).not.toBeNull();
-    expect(view.container.querySelector(".kt-tranbox-content")).not.toBeNull();
+    ).toBeNull();
+    expect(view.container.querySelector(".kt-popup-text-panel")).not.toBeNull();
     expect(view.container.querySelector(".kt-tranbox-header")).toBeNull();
     expect(
       view.container.querySelector('[data-testid="tran-form"]').dataset
         .simpleStyle
     ).toBe("false");
+  });
+
+  test("hands the same dictionary and speech configuration to both panel hosts", async () => {
+    const configOf = (node) => {
+      const data = node.querySelector('[data-testid="tran-form"]').dataset;
+      return {
+        enDict: data.enDict,
+        enSug: data.enSug,
+        aiDictApi: data.aiDictApi,
+        aiDictPrompt: data.aiDictPrompt,
+        ttsApi: data.ttsApi,
+      };
+    };
+
+    view = renderTrantab();
+    await flushEffects();
+    const popup = configOf(view.container);
+    act(() => view.root.unmount());
+    view.container.remove();
+    view = null;
+
+    view = renderTrantab({ isSeparate: true });
+    await flushEffects();
+    const separate = configOf(view.container);
+
+    // Both panel hosts must receive the identical dictionary and speech settings.
+    expect(popup).toEqual(separate);
+    expect(popup).toEqual({
+      enDict: "-",
+      enSug: "-",
+      aiDictApi: "-",
+      aiDictPrompt: "-",
+      ttsApi: "cloud-tts",
+    });
   });
 
   test("keeps clipboard text and available actions through minimal mode and back", async () => {
@@ -389,6 +446,8 @@ describe("shared translation panel hosts", () => {
 
     const form = view.container.querySelector('[data-testid="tran-form"]');
     expect(form.dataset.simpleStyle).toBe("true");
+    expect(form.closest(".kt-popup-text-panel--minimal")).not.toBeNull();
+    const menuTrigger = form.querySelector('button[title="more"]');
     expect(form.dataset.autoFocus).toBe("false");
     expect(form.dataset.syncExternal).toBe("true");
     expect(form.querySelector('[data-testid="source-text"]').textContent).toBe(
@@ -403,6 +462,8 @@ describe("shared translation panel hosts", () => {
     act(() => restoreButton.click());
 
     expect(form.dataset.simpleStyle).toBe("false");
+    expect(form.closest(".kt-popup-text-panel--minimal")).toBeNull();
+    expect(form.querySelector('button[title="more"]')).toBe(menuTrigger);
     expect(form.querySelector('[data-testid="source-text"]').textContent).toBe(
       "Clipboard source text"
     );
@@ -728,6 +789,38 @@ describe("Popup default view", () => {
     });
   }
 
+  test.each([true, false])(
+    "keeps cache clearing and version available without page translation (cleared: %s)",
+    async (cleared) => {
+      loadPopupData.mockResolvedValue(null);
+      let resolveClear;
+      tryClearCaches.mockReset().mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveClear = resolve;
+          })
+      );
+      await renderPopup("page");
+      await flushEffects();
+
+      expect(container.textContent).toContain("popup_page_unavailable");
+      const footer = container.querySelector(".kt-popup-bottom-actions");
+      expect(footer.querySelector(".kt-popup-version").textContent).toBe(
+        `v${process.env.REACT_APP_VERSION}`
+      );
+      expect(footer.querySelector(".kt-popup-disable-button")).toBeNull();
+      const button = footer.querySelector(".kt-popup-cache-button");
+      act(() => button.click());
+      expect(button.disabled).toBe(true);
+      expect(button.getAttribute("data-status")).toBe("clearing");
+      expect(tryClearCaches).toHaveBeenCalledTimes(1);
+      await act(async () => resolveClear(cleared));
+      expect(button.textContent).toContain(
+        cleared ? "popup_cache_cleared" : "popup_cache_failed"
+      );
+    }
+  );
+
   test.each([undefined, "page", "invalid"])(
     "opens the webpage panel for preference %p",
     async (value) => {
@@ -812,4 +905,48 @@ describe("Popup default view", () => {
 
     expect(readClipboardTextIfAllowed).toHaveBeenCalledTimes(1);
   });
+});
+
+test("the separate window subscribes to saved reading size and its menu persists changes", () => {
+  const updateTranbox = jest.fn();
+  const updateChild = jest.fn(() => updateTranbox);
+  useSetting.mockReturnValue({
+    setting: {
+      ...setting,
+      autoTranslateClipboard: false,
+      tranboxSetting: { ...setting.tranboxSetting, fontSize: 20 },
+    },
+    updateChild,
+  });
+  const { container, root } = renderTrantab({ isSeparate: true });
+  try {
+    expect(
+      container
+        .querySelector("[data-reading-font-size]")
+        .style.getPropertyValue("--kt-reading-font-size")
+    ).toBe("20px");
+    act(() => container.querySelector('button[title="more"]').click());
+    act(() =>
+      container.querySelector('[aria-label="tranbox_font_increase"]').click()
+    );
+    expect(updateChild).toHaveBeenCalledWith("tranboxSetting");
+    expect(updateTranbox).toHaveBeenCalledWith({ fontSize: 21 });
+    useSetting.mockReturnValue({
+      setting: {
+        ...setting,
+        autoTranslateClipboard: false,
+        tranboxSetting: { ...setting.tranboxSetting, fontSize: 21 },
+      },
+      updateChild,
+    });
+    act(() => root.render(<Trantab isSeparate />));
+    expect(container.querySelector("output").textContent).toBe("21px");
+    expect(
+      container.querySelector("[data-reading-font-size]").dataset
+        .readingFontSize
+    ).toBe("21");
+  } finally {
+    act(() => root.unmount());
+    container.remove();
+  }
 });

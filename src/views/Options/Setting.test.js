@@ -7,6 +7,7 @@ import Settings, {
   ExtCommands,
 } from "./Setting";
 import UploadButton from "./UploadButton";
+import DownloadButton from "./DownloadButton";
 import { OPT_TRANS_GEMINI, SETTINGS_VERSION_V1 } from "../../config";
 import { browser } from "../../libs/browser";
 import { useAlert } from "../../hooks/Alert";
@@ -58,12 +59,16 @@ jest.mock("./ShortcutInput", () => () => null);
 jest.mock("../../hooks/Fab", () => ({ useFab: jest.fn() }));
 jest.mock("../../libs/msg", () => ({ sendBgMsg: jest.fn() }));
 jest.mock("../../libs/cache", () => ({ tryClearCaches: jest.fn() }));
-jest.mock("../../libs/log", () => ({
-  kissLog: jest.fn(),
-  LogLevel: { INFO: { value: 3 } },
-}));
+jest.mock("../../libs/log", () =>
+  jest.requireActual("../../testUtils/scopedLogMock").withScopedLogMock(
+    (() => ({
+      kissLog: jest.fn(),
+      LogLevel: { INFO: { value: 3 } },
+    }))()
+  )
+);
 jest.mock("./UploadButton", () => jest.fn(() => null));
-jest.mock("./DownloadButton", () => () => null);
+jest.mock("./DownloadButton", () => jest.fn(() => null));
 jest.mock("../../hooks/ValidationInput", () => () => null);
 jest.mock("./OverviewHero", () => () => null);
 
@@ -112,6 +117,54 @@ async function renderSettings() {
 }
 
 describe("Settings overview layout", () => {
+  test("legacy native detector instances are projected without enabling disabled entries", async () => {
+    browser.commands.getAll.mockResolvedValue([]);
+    useAlert.mockReturnValue(alert);
+    useSetting.mockReturnValue({
+      setting: {
+        uiLang: "zh",
+        logLevel: 3,
+        clearCache: false,
+        langDetector: "legacy-google",
+        transApis: [
+          {
+            apiSlug: "legacy-google",
+            apiType: "Google",
+            apiName: "Legacy detector",
+          },
+          {
+            apiSlug: "disabled-google",
+            apiType: "Google",
+            apiName: "Disabled detector",
+            isDisabled: true,
+          },
+        ],
+      },
+      updateSetting: jest.fn(),
+    });
+    useFab.mockReturnValue({ fab: {}, updateFab: jest.fn() });
+    const { container, root } = await renderSettings();
+    try {
+      expect(container.textContent).toContain("Legacy detector");
+      const field = [...container.querySelectorAll("input")]
+        .find((input) => input.value === "legacy-google")
+        .closest(".MuiFormControl-root");
+      act(() =>
+        field
+          .querySelector('[role="combobox"]')
+          .dispatchEvent(
+            new MouseEvent("mousedown", { bubbles: true, button: 0 })
+          )
+      );
+      expect(
+        [...document.querySelectorAll('[role="option"]')].map(
+          (option) => option.textContent
+        )
+      ).not.toContain("Disabled detector");
+    } finally {
+      act(() => root.unmount());
+    }
+  });
   test("keeps the list-style grid free of spacing gutters", async () => {
     browser.commands.getAll.mockResolvedValue([]);
     useAlert.mockReturnValue({ info: jest.fn(), success: jest.fn() });
@@ -185,7 +238,8 @@ describe("Settings backup import", () => {
       setting: { version: 3, uiLang: "zh", logLevel: 3, clearCache: false },
       updateSetting,
     });
-    useFab.mockReturnValue({ fab: {}, updateFab: jest.fn() });
+    const updateFab = jest.fn();
+    useFab.mockReturnValue({ fab: {}, updateFab });
     UploadButton.mockClear();
     const imported = {
       darkMode: true,
@@ -212,6 +266,47 @@ describe("Settings backup import", () => {
         ...imported,
         version: SETTINGS_VERSION_V1,
       });
+      expect(updateFab).not.toHaveBeenCalled();
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  test("round-trips floating button preferences through export and import", async () => {
+    browser.commands.getAll.mockResolvedValue([]);
+    useAlert.mockReturnValue(alert);
+    const setting = {
+      version: 3,
+      uiLang: "en",
+      logLevel: 3,
+      clearCache: false,
+    };
+    const fab = {
+      isHide: true,
+      halfHide: false,
+      opacity: 0.5,
+      size: 40,
+      fabClickAction: 1,
+      hideExceptionList: "example.com",
+    };
+    const updateSetting = jest.fn();
+    const updateFab = jest.fn();
+    useSetting.mockReturnValue({ setting, updateSetting });
+    useFab.mockReturnValue({ fab, updateFab });
+    UploadButton.mockClear();
+    DownloadButton.mockClear();
+    const { root } = await renderSettings();
+
+    try {
+      const { handleData } = DownloadButton.mock.calls.at(-1)[0];
+      const exported = handleData();
+      expect(JSON.parse(exported)).toEqual({ ...setting, fab });
+
+      const { handleImport } = UploadButton.mock.calls.at(-1)[0];
+      await handleImport(exported);
+
+      expect(updateSetting).toHaveBeenCalledWith(setting);
+      expect(updateFab).toHaveBeenCalledWith(fab);
     } finally {
       act(() => root.unmount());
     }
@@ -268,7 +363,7 @@ describe("ExtCommands", () => {
   });
 });
 
-async function chooseBooleanOption(
+async function chooseSelectOption(
   container,
   value,
   name = "autoTranslateClipboard"
@@ -290,6 +385,117 @@ async function chooseBooleanOption(
     await Promise.resolve();
   });
 }
+
+describe("Settings floating button click action", () => {
+  const updateSetting = jest.fn();
+  const updateFab = jest.fn();
+  const storedFab = {
+    isHide: false,
+    hideExceptionList: "https://example.com/*",
+    halfHide: true,
+    opacity: 0.4,
+    size: 72,
+  };
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    mockIsExt = true;
+    updateSetting.mockReset();
+    updateFab.mockReset();
+    useSetting.mockReturnValue({
+      setting: {
+        uiLang: "en",
+        minLength: 2,
+        maxLength: 100000,
+        logLevel: 3,
+        clearCache: false,
+      },
+      updateSetting,
+    });
+    useFab.mockReturnValue({ fab: storedFab, updateFab });
+    useShortcut.mockReturnValue({ shortcut: [], setShortcut: jest.fn() });
+    browser.commands.getAll.mockResolvedValue([]);
+    hasClipboardReadPermission.mockResolvedValue(false);
+    useAlert.mockReturnValue(alert);
+  });
+
+  async function openSettings() {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<Settings />);
+    });
+    return { container, root };
+  }
+
+  test.each([
+    [0, "fab_click_menu"],
+    [1, "fab_click_translate"],
+    [2, "fab_click_popup"],
+  ])(
+    "saves and restores floating button click action %s",
+    async (action, label) => {
+      useFab.mockReturnValue({
+        fab: { ...storedFab, fabClickAction: action === 0 ? 2 : 0 },
+        updateFab,
+      });
+      const { container, root } = await openSettings();
+
+      try {
+        await chooseSelectOption(container, action, "fabClickAction");
+
+        expect(updateFab).toHaveBeenCalledTimes(1);
+        expect(updateFab).toHaveBeenCalledWith({ fabClickAction: action });
+        expect(updateSetting).not.toHaveBeenCalled();
+      } finally {
+        act(() => root.unmount());
+      }
+
+      const savedFab = { ...storedFab, ...updateFab.mock.calls[0][0] };
+      updateFab.mockClear();
+      useFab.mockReturnValue({ fab: savedFab, updateFab });
+      const reopened = await openSettings();
+
+      try {
+        const input = reopened.container.querySelector(
+          'input[name="fabClickAction"]'
+        );
+        expect(input.value).toBe(String(action));
+        expect(
+          input.closest(".MuiInputBase-root").querySelector('[role="combobox"]')
+            .textContent
+        ).toBe(label);
+        expect(
+          reopened.container.querySelector('input[name="opacity"]').value
+        ).toBe("40");
+        expect(
+          reopened.container.querySelector('textarea[name="hideExceptionList"]')
+            .value
+        ).toBe(storedFab.hideExceptionList);
+        expect(updateFab).not.toHaveBeenCalled();
+      } finally {
+        act(() => reopened.root.unmount());
+      }
+    }
+  );
+
+  test("offers the translation panel action outside extension mode", async () => {
+    mockIsExt = false;
+    const { container, root } = await openSettings();
+
+    try {
+      expect(
+        container.querySelector('input[name="fabClickAction"]').value
+      ).toBe("0");
+      await chooseSelectOption(container, 2, "fabClickAction");
+      expect(updateFab).toHaveBeenCalledWith({ fabClickAction: 2 });
+      expect(updateSetting).not.toHaveBeenCalled();
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+});
 
 describe("Settings floating button appearance", () => {
   const updateSetting = jest.fn();
@@ -432,7 +638,7 @@ describe("Settings floating button appearance", () => {
       const { container, root } = await renderAppearanceSettings();
 
       try {
-        await chooseBooleanOption(container, nextHalfHide, "halfHide");
+        await chooseSelectOption(container, nextHalfHide, "halfHide");
 
         expect(updateFab).toHaveBeenCalledTimes(1);
         expect(updateFab).toHaveBeenCalledWith({ halfHide: nextHalfHide });
@@ -636,7 +842,7 @@ describe("AutoTranslateClipboardSetting", () => {
       await Promise.resolve();
     });
 
-    await chooseBooleanOption(container, true);
+    await chooseSelectOption(container, true);
 
     expect(requestClipboardReadPermission).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledWith(true);
@@ -657,7 +863,7 @@ describe("AutoTranslateClipboardSetting", () => {
       await Promise.resolve();
     });
 
-    await chooseBooleanOption(container, true);
+    await chooseSelectOption(container, true);
 
     expect(onChange).toHaveBeenCalledWith(false);
     expect(alert.warning).toHaveBeenCalledWith("clipboard_permission_denied");

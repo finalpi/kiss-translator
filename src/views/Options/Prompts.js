@@ -1,5 +1,6 @@
 import {
   Fragment,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -42,13 +43,16 @@ import {
   PROMPT_CATEGORY_BATCH_SYSTEM,
   PROMPT_CATEGORY_DICTIONARY,
   PROMPT_CATEGORY_SUBTITLE,
+  PROMPT_CATEGORY_SUMMARY,
   PROMPT_CATEGORY_USER,
+  PROMPT_CATEGORY_VLM,
   PROMPT_TEMPLATE_CATEGORIES,
   getPromptCategoryDisplayName,
   getPromptDisplayName,
   normalizePrompt,
 } from "../../config";
 import { usePromptList } from "../../hooks/Prompt";
+import { useSettingsSearchNavigation } from "./SettingsSearchTarget";
 import CodeField from "./CodeField";
 import TextareaResizeGrip from "../../components/TextareaResizeGrip";
 import useTextareaHeightLock, {
@@ -69,6 +73,13 @@ const TRANSLATION_PROMPT_PLACEHOLDERS = [
   INPUT_PLACE_TONE,
   INPUT_PLACE_GLOSSARY,
 ];
+
+const hasUserPromptField = ({ category }) =>
+  category === PROMPT_CATEGORY_USER ||
+  category === PROMPT_CATEGORY_DICTIONARY ||
+  category === PROMPT_CATEGORY_SUMMARY ||
+  category === PROMPT_CATEGORY_BATCH_SYSTEM ||
+  category === PROMPT_CATEGORY_VLM;
 
 const BATCH_TRANSLATION_PROMPT_PLACEHOLDERS = [
   INPUT_PLACE_SEGMENTS,
@@ -106,9 +117,18 @@ const DICTIONARY_PROMPT_PLACEHOLDERS = [
   INPUT_PLACE_DESCRIPTION,
   INPUT_PLACE_SUMMARY,
   INPUT_PLACE_CONTEXT,
+  INPUT_PLACE_GLOSSARY,
 ];
 
 function getPromptPlaceholders(category) {
+  if (category === PROMPT_CATEGORY_SUMMARY) {
+    return [
+      INPUT_PLACE_TITLE,
+      INPUT_PLACE_DESCRIPTION,
+      "{{transcript}}",
+      INPUT_PLACE_TO,
+    ];
+  }
   if (category === PROMPT_CATEGORY_SUBTITLE) {
     return SUBTITLE_PROMPT_PLACEHOLDERS;
   }
@@ -247,10 +267,7 @@ function PromptFields({
     }
   }, [formData.userPrompt, releaseUserHeight]);
   // Only show the second prompt for flows that consume userPrompt.
-  const showUserPrompt =
-    formData.category === PROMPT_CATEGORY_USER ||
-    formData.category === PROMPT_CATEGORY_DICTIONARY ||
-    formData.category === PROMPT_CATEGORY_BATCH_SYSTEM;
+  const showUserPrompt = hasUserPromptField(formData);
 
   // Rebuilding the prompt list can replace objects without changing their content.
   // Reset the unsaved draft only when the persisted content changes.
@@ -337,57 +354,59 @@ function PromptFields({
         disabled={isPreset}
       />
 
-      <Stack spacing={1}>
-        <CodeField
-          className="kt-resizable-text-field"
-          size="small"
-          label={i18n("system_prompt", "系统提示词")}
-          name="systemPrompt"
-          value={formData.systemPrompt}
-          onChange={handleChange}
-          inputRef={systemPromptRef}
-          minRows={3}
-          maxRows={14}
-          disabled={isPreset}
-          InputProps={{
-            ...systemHeightLock.rootProps,
-            endAdornment:
-              formData.systemPrompt.trim() ||
-              systemHeightLock.lockedHeight != null ? (
-                <TextareaResizeGrip
-                  target={systemHeightLock.textareaRef}
-                  onResize={systemHeightLock.applyHeight}
-                  value={systemHeightLock.lockedHeight}
-                  label={i18n("field_resize_height")}
-                  variant={gripStyle}
-                  onRelease={systemHeightLock.releaseHeight}
-                  unlockHint={i18n("field_resize_unlock_hint")}
-                />
-              ) : null,
-          }}
-          inputProps={{
-            className: "kt-resizable-textarea",
+      {formData.category !== PROMPT_CATEGORY_VLM && (
+        <Stack spacing={1}>
+          <CodeField
+            className="kt-resizable-text-field"
+            size="small"
+            label={i18n("system_prompt", "系统提示词")}
+            name="systemPrompt"
+            value={formData.systemPrompt}
+            onChange={handleChange}
+            inputRef={systemPromptRef}
+            minRows={3}
+            maxRows={14}
+            disabled={isPreset}
+            InputProps={{
+              ...systemHeightLock.rootProps,
+              endAdornment:
+                formData.systemPrompt.trim() ||
+                systemHeightLock.lockedHeight != null ? (
+                  <TextareaResizeGrip
+                    target={systemHeightLock.textareaRef}
+                    onResize={systemHeightLock.applyHeight}
+                    value={systemHeightLock.lockedHeight}
+                    label={i18n("field_resize_height")}
+                    variant={gripStyle}
+                    onRelease={systemHeightLock.releaseHeight}
+                    unlockHint={i18n("field_resize_unlock_hint")}
+                  />
+                ) : null,
+            }}
+            inputProps={{
+              className: "kt-resizable-textarea",
               style: { resize: gripStyle === "hidden" ? "vertical" : "none" },
-          }}
-          sx={{
-            "& .MuiInputBase-root": {
-              overflow: "visible",
-            },
-          }}
-        />
-        {!isPreset && (
-          <PromptPlaceholderButtons
-            category={formData.category}
-            onInsert={(placeholder) =>
-              handleInsertPlaceholder(
-                "systemPrompt",
-                systemPromptRef,
-                placeholder
-              )
-            }
+            }}
+            sx={{
+              "& .MuiInputBase-root": {
+                overflow: "visible",
+              },
+            }}
           />
-        )}
-      </Stack>
+          {!isPreset && (
+            <PromptPlaceholderButtons
+              category={formData.category}
+              onInsert={(placeholder) =>
+                handleInsertPlaceholder(
+                  "systemPrompt",
+                  systemPromptRef,
+                  placeholder
+                )
+              }
+            />
+          )}
+        </Stack>
+      )}
 
       {showUserPrompt && (
         <Stack spacing={1}>
@@ -546,14 +565,14 @@ export default function Prompts() {
     setAnchorEl(null);
   };
 
-  const confirmDiscardChanges = async () => {
+  const confirmDiscardChanges = useCallback(async () => {
     if (!editorDirty) return true;
     return confirm({
       message: i18n("discard_prompt_changes_confirm"),
       confirmText: i18n("discard_changes"),
       cancelText: i18n("cancel"),
     });
-  };
+  }, [confirm, editorDirty, i18n]);
 
   const handleAddPromptFromTemplate = async (template) => {
     if (!(await confirmDiscardChanges())) return;
@@ -570,13 +589,41 @@ export default function Prompts() {
     setSelectedPromptSlug(promptSlug);
   };
 
-  const handleSelectPrompt = async (prompt) => {
-    const promptSlug = normalizePrompt(prompt).slug;
-    if (promptSlug === selectedPromptSlug) return;
-    if (!(await confirmDiscardChanges())) return;
-    setEditorDirty(false);
-    setSelectedPromptSlug(promptSlug);
-  };
+  const handleSelectPrompt = useCallback(
+    async (prompt) => {
+      const promptSlug = normalizePrompt(prompt).slug;
+      if (promptSlug === selectedPromptSlug) return;
+      if (!(await confirmDiscardChanges())) return;
+      setEditorDirty(false);
+      setSelectedPromptSlug(promptSlug);
+    },
+    [selectedPromptSlug, confirmDiscardChanges]
+  );
+
+  const { target: searchTarget, navigationKey } = useSettingsSearchNavigation();
+  const handledSearchTarget = useRef(null);
+  useEffect(() => {
+    if (searchTarget !== "user_prompt") {
+      handledSearchTarget.current = null;
+      return;
+    }
+    if (
+      !selectedPrompt ||
+      (handledSearchTarget.current?.target === searchTarget &&
+        handledSearchTarget.current?.navigationKey === navigationKey)
+    )
+      return;
+    handledSearchTarget.current = { target: searchTarget, navigationKey };
+    if (hasUserPromptField(selectedPrompt)) return;
+    const match = prompts.find(hasUserPromptField);
+    if (match) void handleSelectPrompt(match);
+  }, [
+    searchTarget,
+    navigationKey,
+    selectedPrompt,
+    prompts,
+    handleSelectPrompt,
+  ]);
 
   return (
     <Box>

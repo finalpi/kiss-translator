@@ -1,11 +1,19 @@
+import { terminologyWarningHandler } from "../../libs/terminologyWarning";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import CircularProgress from "@mui/material/CircularProgress";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
+import ReplayRoundedIcon from "@mui/icons-material/ReplayRounded";
+import VolumeUpIcon from "@mui/icons-material/VolumeUp";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { apiTranslate } from "../../apis";
+import { supportsServiceFeature } from "../../providers/features";
+import { getBuiltinServiceDefinition } from "../../builtin-plugins/definitions";
+import { getDocInfo } from "../../libs/docInfo";
 import {
   API_SPE_TYPES,
   OPT_TRANS_BUILTINAI,
@@ -16,6 +24,7 @@ import { parseMathInText } from "../../libs/mathParse";
 import CopyBtn from "./CopyBtn";
 import { BrowserTtsBtn } from "./AudioBtn";
 import TextareaResizeGrip from "../../components/TextareaResizeGrip";
+import ApiProviderIcon from "../../components/ApiProviderIcon";
 import useTextareaHeightLock, {
   useTextareaGripStyle,
   useReleaseOnGripHidden,
@@ -30,7 +39,7 @@ import useTextareaHeightLock, {
 const canRenderStream = (apiSetting) =>
   Boolean(
     apiSetting?.useStream &&
-      API_SPE_TYPES.stream.has(apiSetting.apiType) &&
+      supportsServiceFeature(apiSetting, "stream") &&
       (apiSetting.streamRenderMode || "disabled") !== "disabled"
   );
 
@@ -47,6 +56,87 @@ const normalizeChunkText = (text) => {
 
   return text || "";
 };
+
+function getPopupErrorMessage(value, concise = false) {
+  if (typeof value !== "string") return "";
+  const message = value.replace(/\n\s*at\b[\s\S]*$/, "").trim();
+  if (
+    !message ||
+    /^[{[]/.test(message) ||
+    /[a-z][a-z\d+.-]*:\/\/|www\.|<\/?[a-z!][^>]*>/i.test(message)
+  ) {
+    return "";
+  }
+  if (!concise) return message;
+  const singleLine = message.replace(/\s+/g, " ");
+  return singleLine.length > 180 ? `${singleLine.slice(0, 179)}…` : singleLine;
+}
+
+function formatPopupError(error, i18n) {
+  const generic = i18n(
+    "popup_text_failed",
+    "Translation failed. Please retry."
+  );
+  const auth = i18n(
+    "popup_text_auth_failed",
+    "Check your API Key in Settings."
+  );
+  const raw = String(error || "")
+    .replace(/^(?:Uncaught\s+)?(?:\w*Error):\s*/i, "")
+    .trim();
+  const isAuthError = (message) =>
+    /unauthorized|(?:missing|invalid|incorrect)\s+(?:an?\s+)?api[\s_-]*key|api[\s_-]*key\s+(?:is\s+)?(?:missing|required|invalid|incorrect)|(?:authentication|authorization)\s+(?:failed|failure)/i.test(
+      message
+    );
+  let details;
+  try {
+    details = JSON.parse(raw);
+  } catch {
+    const start = raw.indexOf("{");
+    const end = raw.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try {
+        details = JSON.parse(raw.slice(start, end + 1));
+      } catch {
+        // A malformed diagnostic payload must not appear in the popup.
+      }
+    }
+  }
+  if (details === undefined) {
+    const message = getPopupErrorMessage(raw);
+    return message ? (isAuthError(message) ? auth : message) : generic;
+  }
+  if (!details || typeof details !== "object" || Array.isArray(details)) {
+    return generic;
+  }
+
+  let response = details.response ?? details;
+  if (typeof response === "string") {
+    try {
+      response = JSON.parse(response);
+    } catch {
+      // Plain upstream messages do not need a JSON response envelope.
+    }
+  }
+  const message = getPopupErrorMessage(
+    typeof response === "string"
+      ? response
+      : response?.error?.message || response?.message,
+    true
+  );
+  const status = Number(details.status);
+  const hasStatus = Number.isInteger(status) && status >= 100 && status <= 599;
+  const detail =
+    status === 401 || isAuthError(`${details.statusText || ""} ${message}`)
+      ? auth
+      : message;
+  if (!hasStatus) return detail || generic;
+  const failed = i18n(
+    "popup_text_request_failed",
+    "Request failed ({status})"
+  ).replace("{status}", String(status));
+  return detail ? `${failed}: ${detail}` : failed;
+}
 
 /**
  * Convert an API response to plain text for display and copying.
@@ -148,11 +238,16 @@ const translateBuiltinText = async (
  * @param {Array<Object>} props.transApis Available translation API settings.
  * @param {boolean} [props.simpleStyle=false] Whether to use the simple text layout.
  * @param {boolean} [props.isPlayground=false] Whether to render the full Playground result surface.
+ * @param {boolean} [props.isPopup=false] Whether to render a popup result section.
+ * @param {boolean} [props.showProvider=true] Whether to show the provider section header.
+ * @param {HTMLElement|null} [props.actionContainer=null] Host for single-provider popup actions.
+ * @param {boolean} [props.waitForSourceDetection=false] Whether the target requires completed source detection.
  * @param {number} [props.requestRevision=0] Explicit submission revision for retrying unchanged input.
  * @param {Function} [props.onActionPointerDown] Host focus policy for result actions.
  * @returns {JSX.Element|null} Result view for one translation provider.
  */
 export default function TranCont({
+  scene,
   text,
   fromLang,
   toLang,
@@ -162,22 +257,34 @@ export default function TranCont({
   parseLatex = false,
   detectedLang = "",
   sourceDetectionPending = false,
+  waitForSourceDetection = false,
   simpleStyle = false,
   isPlayground = false,
+  isPopup = false,
+  showProvider = true,
+  actionContainer = null,
   requestRevision = 0,
   onActionPointerDown,
+  ttsApiSlug = "",
+  translationContext = "",
+  selectionUrl = "",
 }) {
   const i18n = useI18n();
   const [trText, setTrText] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [attemptRevision, setAttemptRevision] = useState(requestRevision);
+  const [retryRevision, setRetryRevision] = useState(0);
   const requestPendingRef = useRef(false);
   const gripStyle = useTextareaGripStyle();
   const resultHeightLock = useTextareaHeightLock(
     // 键随 apiSlug 走：TranForm 以 key={slug} 并存多个结果实例，共享键
     // 会让各实例互改写同一会话记忆；playground 为单实例，键保留。
-    isPlayground ? "trancont-result-playground" : `trancont-result:${apiSlug}`
+    isPopup
+      ? `trancont-popup-result:${apiSlug}`
+      : isPlayground
+        ? "trancont-result-playground"
+        : `trancont-result:${apiSlug}`
   );
   useReleaseOnGripHidden(gripStyle, resultHeightLock.releaseHeight);
 
@@ -204,8 +311,9 @@ export default function TranCont({
   const coordinatesBuiltinSource =
     apiSetting?.apiType === OPT_TRANS_BUILTINAI && fromLang === "auto";
   const builtinDetectedLang = coordinatesBuiltinSource ? detectedLang : "";
-  const waitForBuiltinDetection =
-    coordinatesBuiltinSource && sourceDetectionPending;
+  const waitForDetection =
+    (coordinatesBuiltinSource || waitForSourceDetection) &&
+    sourceDetectionPending;
 
   useEffect(() => {
     requestPendingRef.current = false;
@@ -216,7 +324,7 @@ export default function TranCont({
       return;
     }
 
-    if (waitForBuiltinDetection) {
+    if (waitForDetection) {
       requestPendingRef.current = true;
       setTrText("");
       setLoading(true);
@@ -227,7 +335,21 @@ export default function TranCont({
     let active = true;
     requestPendingRef.current = true;
     const controller = new AbortController();
+    const warnTerminology = terminologyWarningHandler(i18n.language);
     const enableStreamRender = canRenderStream(apiSetting);
+    const context = String(translationContext || "").trim();
+    const sourceUrl = String(selectionUrl || "").trim();
+    const isCurrentSelection = !sourceUrl || sourceUrl === window.location.href;
+    const externalProvider =
+      apiSetting.provider &&
+      apiSetting.provider.implementation?.kind !== "native";
+    const docInfo =
+      context &&
+      isCurrentSelection &&
+      (externalProvider ||
+        getBuiltinServiceDefinition(apiSetting.apiType)?.usesMessages)
+        ? { ...getDocInfo(), context }
+        : undefined;
 
     /**
      * Synchronize streaming text from the translation queue with the output field.
@@ -263,6 +385,9 @@ export default function TranCont({
         const translate = (requestText, requestFromLang = fromLang) =>
           apiTranslate({
             text: requestText,
+            scene,
+            ...(docInfo ? { docInfo } : {}),
+            onTerminologyWarning: warnTerminology,
             fromLang: requestFromLang,
             toLang,
             apiSetting,
@@ -317,6 +442,8 @@ export default function TranCont({
       controller.abort();
     };
   }, [
+    i18n.language,
+    scene,
     text,
     fromLang,
     toLang,
@@ -324,8 +451,11 @@ export default function TranCont({
     translateVariants,
     parseLatex,
     builtinDetectedLang,
-    waitForBuiltinDetection,
+    waitForDetection,
     attemptRevision,
+    retryRevision,
+    translationContext,
+    selectionUrl,
   ]);
 
   // Keep pending requests, including queued batches, intact on repeated submits.
@@ -338,21 +468,167 @@ export default function TranCont({
     return null;
   }
 
+  const resultLabel = `${i18n("translated_text")} - ${
+    apiSetting.apiName || apiSetting.apiSlug
+  }`;
+
+  if (isPopup) {
+    const hasResult = Boolean(trText.trim() && !error);
+    const popupError = error ? formatPopupError(error, i18n) : "";
+    const actions = (
+      <div
+        className="kt-popup-text-result__actions"
+        onPointerDown={onActionPointerDown}
+      >
+        {hasResult ? (
+          <>
+            <CopyBtn
+              text={trText}
+              title={i18n("copy")}
+              copiedLabel={i18n("copy_success", "Copied")}
+            />
+            <BrowserTtsBtn
+              serviceId={ttsApiSlug}
+              text={trText}
+              lang={toLang}
+              title={i18n("read_aloud")}
+              stopTitle={i18n("stop_speaking")}
+            />
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              disabled
+              title={i18n("copy")}
+              aria-label={i18n("copy")}
+            >
+              <ContentCopyIcon fontSize="inherit" />
+            </button>
+            <button
+              type="button"
+              disabled
+              title={i18n("read_aloud")}
+              aria-label={i18n("read_aloud")}
+            >
+              <VolumeUpIcon fontSize="inherit" />
+            </button>
+          </>
+        )}
+      </div>
+    );
+
+    return (
+      <section
+        className="kt-popup-text-result"
+        data-api-slug={apiSlug}
+        data-state={
+          error ? "error" : loading ? "loading" : trText ? "ready" : "empty"
+        }
+        aria-label={resultLabel}
+        aria-busy={loading}
+      >
+        {showProvider ? (
+          <div className="kt-popup-text-result__header">
+            <div className="kt-popup-text-result__provider">
+              <ApiProviderIcon
+                apiType={apiSetting.apiType}
+                size={18}
+                imageSize={14}
+                lightSurface
+              />
+              <span>{apiSetting.apiName || apiSetting.apiSlug}</span>
+            </div>
+            {actions}
+          </div>
+        ) : actionContainer ? (
+          createPortal(actions, actionContainer)
+        ) : (
+          <div className="kt-popup-text-result__header">{actions}</div>
+        )}
+        <div className="kt-popup-text-result__body">
+          {error ? (
+            <div className="kt-popup-text-result__error" role="alert">
+              <p>{popupError}</p>
+              <button
+                type="button"
+                className="kt-popup-text-result__retry"
+                onPointerDown={onActionPointerDown}
+                onClick={() => setRetryRevision((revision) => revision + 1)}
+              >
+                <ReplayRoundedIcon fontSize="inherit" />
+                {i18n("retry")}
+              </button>
+            </div>
+          ) : (
+            <>
+              {loading && (
+                <div className="kt-popup-text-result__loading">
+                  <CircularProgress
+                    size={12}
+                    aria-label={i18n("popup_translating")}
+                  />
+                  <span>{i18n("popup_translating")}</span>
+                </div>
+              )}
+              {trText ? (
+                <div className="kt-popup-text-result__content">{trText}</div>
+              ) : !loading ? (
+                <div className="kt-popup-text-result__empty">
+                  {i18n(
+                    "popup_text_result_empty",
+                    "Translation will appear here."
+                  )}
+                </div>
+              ) : null}
+            </>
+          )}
+        </div>
+        <span
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          style={{
+            width: 1,
+            height: 1,
+            position: "absolute",
+            overflow: "hidden",
+            padding: 0,
+            margin: -1,
+            border: 0,
+            clip: "rect(0 0 0 0)",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {!loading && (error || trText)
+            ? `${resultLabel}: ${popupError || trText}`
+            : ""}
+        </span>
+      </section>
+    );
+  }
+
   if (simpleStyle) {
     return (
-      <Box aria-live="polite" aria-busy={loading}>
+      <Box
+        className="kt-translation-reading"
+        aria-live="polite"
+        aria-busy={loading}
+      >
         {error ? (
           <Alert severity="error">{error}</Alert>
         ) : trText ? (
           <Stack direction="row" spacing={1} alignItems="flex-start">
-            <Box sx={{ width: 12, height: 12, flex: "0 0 auto", mt: "0.35em" }}>
-              {loading && (
+            {loading && (
+              <Box
+                sx={{ width: 12, height: 12, flex: "0 0 auto", mt: "0.35em" }}
+              >
                 <CircularProgress
                   size={12}
                   aria-label={i18n("popup_translating")}
                 />
-              )}
-            </Box>
+              </Box>
+            )}
             <Typography style={{ whiteSpace: "pre-line" }}>{trText}</Typography>
           </Stack>
         ) : loading ? (
@@ -361,10 +637,6 @@ export default function TranCont({
       </Box>
     );
   }
-
-  const resultLabel = `${i18n("translated_text")} - ${
-    apiSetting.apiName || apiSetting.apiSlug
-  }`;
 
   return (
     <Box
@@ -415,7 +687,7 @@ export default function TranCont({
         InputProps={{
           ...resultHeightLock.rootProps,
           readOnly: true,
-          startAdornment: (
+          startAdornment: loading ? (
             <Box
               sx={{
                 width: 16,
@@ -424,57 +696,61 @@ export default function TranCont({
                 placeItems: "center",
               }}
             >
-              {loading && (
-                <CircularProgress
-                  size={16}
-                  aria-label={i18n("popup_translating")}
-                />
-              )}
+              <CircularProgress
+                size={16}
+                aria-label={i18n("popup_translating")}
+              />
             </Box>
-          ),
+          ) : null,
           endAdornment: (
             <>
-            <Stack
-              onPointerDown={onActionPointerDown}
-              className={
-                isPlayground ? "kt-translation-text-field__actions" : undefined
-              }
-              direction="row"
-              sx={
-                isPlayground
-                  ? undefined
-                  : {
-                      position: "absolute",
-                      right: 0,
-                      top: 0,
-                    }
-              }
-            >
-              {/* Copy the current translation, including partial text during streaming. */}
-              {trText && (
-                <CopyBtn
+              <Stack
+                onPointerDown={onActionPointerDown}
+                className={
+                  isPlayground
+                    ? "kt-translation-text-field__actions"
+                    : "kt-translation-text-actions"
+                }
+                direction="row"
+                spacing={1}
+                useFlexGap
+                sx={
+                  isPlayground
+                    ? undefined
+                    : {
+                        position: "absolute",
+                        right: 0,
+                        top: 0,
+                      }
+                }
+              >
+                {/* Copy the current translation, including partial text during streaming. */}
+                {trText && (
+                  <CopyBtn
+                    text={trText}
+                    title={i18n("copy")}
+                    copiedLabel={i18n("copy_success", "Copied")}
+                  />
+                )}
+                <BrowserTtsBtn
+                  serviceId={ttsApiSlug}
                   text={trText}
-                  title={i18n("copy")}
-                  copiedLabel={i18n("copy_success", "Copied")}
+                  lang={toLang}
+                  title={i18n("read_aloud")}
+                  stopTitle={i18n("stop_speaking")}
+                />
+              </Stack>
+              {(trText.trim() || resultHeightLock.lockedHeight != null) && (
+                <TextareaResizeGrip
+                  target={resultHeightLock.textareaRef}
+                  onResize={resultHeightLock.applyHeight}
+                  value={resultHeightLock.lockedHeight}
+                  label={i18n("field_resize_height")}
+                  variant={gripStyle}
+                  onRelease={resultHeightLock.releaseHeight}
+                  unlockHint={i18n("field_resize_unlock_hint")}
                 />
               )}
-              <BrowserTtsBtn
-                text={trText}
-                lang={toLang}
-                title={i18n("read_aloud")}
-              />
-            </Stack>
-            {(trText.trim() || resultHeightLock.lockedHeight != null) && (
-              <TextareaResizeGrip
-                target={resultHeightLock.textareaRef}
-                onResize={resultHeightLock.applyHeight}
-                value={resultHeightLock.lockedHeight}
-                label={i18n("field_resize_height")}
-                variant={gripStyle}
-                onRelease={resultHeightLock.releaseHeight}
-                unlockHint={i18n("field_resize_unlock_hint")}
-              />
-            )}
             </>
           ),
         }}

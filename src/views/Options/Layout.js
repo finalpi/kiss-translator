@@ -1,3 +1,5 @@
+import { logger } from "../../libs/log";
+import { isGm } from "../../libs/client";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import Header from "./Header";
@@ -7,11 +9,28 @@ import { useMediaQueryMatch } from "../../hooks/MediaQuery";
 import { useSetting } from "../../hooks/Setting";
 import { OPTIONS_STYLES } from "./styles";
 import { normalizeOptionsPath } from "./paths";
+import {
+  getSettingsSearchTarget,
+  getSettingsSearchLabel,
+  getSettingsSearchPrerequisite,
+} from "./search";
+import SettingsSearchTarget from "./SettingsSearchTarget";
 
-const WIDE_PAGE_PATHS = new Set(["/apis", "/playground", "/prompts"]);
+const WIDE_PAGE_PATHS = new Set([
+  "/apis",
+  "/plugins",
+  "/playground",
+  "/diagnostics",
+  "/prompts",
+  "/terms",
+]);
+const FULL_WIDTH_PAGE_PATHS = new Set(["/file-translate"]);
 
 export const isWideOptionsPage = (pathname) =>
   WIDE_PAGE_PATHS.has(normalizeOptionsPath(pathname));
+
+export const isFullWidthOptionsPage = (pathname) =>
+  FULL_WIDTH_PAGE_PATHS.has(normalizeOptionsPath(pathname));
 
 export const VERSION_REGEX = /^(\d+)\.(\d+)\.(\d+)$/;
 
@@ -87,16 +106,22 @@ export default function Layout() {
   const i18n = useI18n();
   const { setting } = useSetting();
   const checkUpdate = setting?.checkUpdate ?? true;
+  const currentVersion = isGm
+    ? window.APP_INFO?.version
+    : process.env.REACT_APP_VERSION;
   const [navigationOpen, setNavigationOpen] = useState(false);
   const navigationTriggerRef = useRef(null);
   const backgroundRef = useRef(null);
   const [latestVersion, setLatestVersion] = useState("");
   const isMobile = useMediaQueryMatch("(max-width: 1179px)");
   const isWidePage = isWideOptionsPage(pathname);
+  const isFullWidthPage = isFullWidthOptionsPage(pathname);
+  const searchTarget = getSettingsSearchTarget(pathname, location.search);
+  const prerequisite = getSettingsSearchPrerequisite(pathname, searchTarget);
 
   useEffect(() => {
     if (process.env.NODE_ENV === "test") return undefined;
-    if (!checkUpdate) {
+    if (!checkUpdate || !isValidVersion(currentVersion)) {
       setLatestVersion("");
       return undefined;
     }
@@ -104,24 +129,22 @@ export default function Layout() {
     const controller = new AbortController();
     fetchLatestVersion({ signal: controller.signal })
       .then((version) => {
-        if (
-          active &&
-          version &&
-          isNewerVersion(version, process.env.REACT_APP_VERSION)
-        ) {
-          setLatestVersion(version);
+        if (active) {
+          setLatestVersion(
+            isNewerVersion(version, currentVersion) ? version : ""
+          );
         }
       })
       .catch((error) => {
         if (error.name !== "AbortError") {
-          console.error("fetch version error:", error);
+          logger.child("options").error("fetch version error:", error);
         }
       });
     return () => {
       active = false;
       controller.abort();
     };
-  }, [checkUpdate]);
+  }, [checkUpdate, currentVersion]);
 
   useEffect(() => {
     setNavigationOpen(false);
@@ -244,18 +267,48 @@ export default function Layout() {
         i18n("subtitle_translate"),
         i18n("options_subtitle_description"),
       ],
+      "/image-translate": [
+        i18n("image_translate", "图片翻译"),
+        i18n(
+          "options_image_translate_description",
+          "网页图片悬停识别、截图框选翻译与模型配置"
+        ),
+      ],
       "/apis": [
-        i18n("options_translation_services"),
+        i18n("options_service_config", "服务配置"),
         i18n("options_services_description"),
+      ],
+      "/terms": [
+        i18n("terminology_tables"),
+        i18n("terminology_description_help"),
       ],
       "/prompts": [
         i18n("prompt_management"),
         i18n("options_prompts_description"),
       ],
+      "/plugins": [
+        i18n("provider_plugins", "接口插件"),
+        i18n(
+          "provider_plugins_description",
+          "管理外部插件包、安装来源和模板更新"
+        ),
+      ],
       "/sync": [i18n("options_data_sync"), i18n("options_sync_description")],
       "/words": [i18n("favorite_words"), i18n("options_words_description")],
+      "/local-ai": [
+        i18n("local_ai_title", "本地 AI"),
+        i18n(
+          "local_ai_desc",
+          "在浏览器本地运行轻量 AI 模型，无需上传网络，兼顾隐私与离线体验"
+        ),
+      ],
+      "/file-translate": [
+        i18n("file_translate_title", "文件翻译"),
+        i18n("file_translate_desc", "本地文档与图片翻译"),
+      ],
       "/playground": ["Playground", ""],
       "/about": [i18n("about"), ""],
+      "/diagnostics": [i18n("diagnostics_title"), ""],
     };
     return pages[pathname] || pages["/"];
   }, [i18n, pathname]);
@@ -276,7 +329,11 @@ export default function Layout() {
           <main className="kt-options-main">
             <div
               className={`kt-options-main__inner ${
-                isWidePage ? "kt-options-main__inner--wide" : ""
+                isFullWidthPage
+                  ? "kt-options-main__inner--full"
+                  : isWidePage
+                    ? "kt-options-main__inner--wide"
+                    : ""
               }`.trim()}
             >
               <header className="kt-options-page-header">
@@ -287,21 +344,44 @@ export default function Layout() {
                 <div className="kt-options-version-alert" role="status">
                   <span>
                     {i18n("version_warning")
-                      .replace("{0}", process.env.REACT_APP_VERSION)
+                      .replace("{0}", currentVersion)
                       .replace("{1}", latestVersion)}
                   </span>
                   <a
-                    href={process.env.REACT_APP_RELEASES_URL}
+                    href={
+                      isGm
+                        ? process.env.REACT_APP_USERSCRIPT_DOWNLOADURL
+                        : process.env.REACT_APP_RELEASES_URL
+                    }
                     target="_blank"
                     rel="noreferrer"
                   >
                     {i18n("download_update")}
                   </a>
+                  {isGm && (
+                    <>
+                      {" · "}
+                      <a
+                        href={process.env.REACT_APP_USERSCRIPT_IOS_DOWNLOADURL}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        iOS Safari
+                      </a>
+                    </>
+                  )}
                 </div>
               )}
-              <div className="kt-options-page">
+              <SettingsSearchTarget
+                target={searchTarget}
+                label={
+                  searchTarget ? getSettingsSearchLabel(searchTarget, i18n) : ""
+                }
+                navigationKey={location.key}
+                fallbackLabel={prerequisite ? i18n(prerequisite) : ""}
+              >
                 <Outlet />
-              </div>
+              </SettingsSearchTarget>
             </div>
           </main>
         </div>

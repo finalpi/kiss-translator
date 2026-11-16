@@ -1,3 +1,4 @@
+import { isApiAvailableFor } from "../../config/serviceSelection";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
@@ -42,8 +43,11 @@ import {
   defaultNobatchUserPrompt,
 } from "../../config";
 import { apiTranslate } from "../../apis";
+import { supportsServiceFeature } from "../../providers/features";
 import { useAlert } from "../../hooks/Alert";
 import { useI18n } from "../../hooks/I18n";
+import { registerI18n } from "../../config/i18n";
+import { TERMINOLOGY_PLAYGROUND_I18N } from "../../config/locales/terminologyPlayground";
 import TextareaResizeGrip from "../../components/TextareaResizeGrip";
 import useTextareaHeightLock, {
   useTextareaGripStyle,
@@ -70,7 +74,9 @@ import {
   selectDisplayedResults,
 } from "../../libs/termTestUtils";
 
-// 占位符格式由 apiSetting.placeholder 配置决定，默认取内置第一项 "{ }" → 生成 {1}、{2}…
+registerI18n(TERMINOLOGY_PLAYGROUND_I18N);
+
+// 占位符格式由 apiSetting.placeholder 配置决定，默认取内置第一项 "{{ }}" → 生成 {{1}}、{{2}}…
 const [PLACEHOLDER_START, PLACEHOLDER_END] = BUILTIN_PLACEHOLDERS[0].split(" ");
 
 // 接口条目的运行时必需默认字段（2026-08-20 根因修复）。
@@ -80,7 +86,7 @@ const [PLACEHOLDER_START, PLACEHOLDER_END] = BUILTIN_PLACEHOLDERS[0].split(" ");
 // 整页翻译在发请求前就失败。真实扩展条目由设置页基于 defaultApi 构建；
 // Playground 做真实 AI 测试前，必须在所有读取点补齐这些字段，否则必然复现同一崩溃。
 const API_RUNTIME_DEFAULTS = {
-  placeholder: "{ }", // BUILTIN_PLACEHOLDERS[0]
+  placeholder: BUILTIN_PLACEHOLDERS[0],
   placetag: "i", // BUILTIN_PLACETAGS[0]
   placetagFormat: "compact",
   rootMargin: 2000, // defaultApi.rootMargin
@@ -611,8 +617,7 @@ function buildPromptLabel(
     );
   }
   if (category === "ai" && !isBatch) {
-    const actualNobatch = nobatchUserPrompt ?? defaultNobatchUserPrompt;
-    return actualNobatch === defaultNobatchUserPrompt
+    return nobatchUserPrompt === defaultNobatchUserPrompt
       ? i18n("terminology_playground_prompt_nobatch", "非批量翻译提示词")
       : i18n(
           "terminology_playground_prompt_custom_nobatch",
@@ -895,7 +900,7 @@ function formatAssertionIssue(issue, i18n) {
       return formatI18n(
         i18n,
         "terminology_playground_issue_conflict_long_no_value_replaced",
-        "长词 {long} 无译文但被替换为 \"{replacement}\"。",
+        '长词 {long} 无译文但被替换为 "{replacement}"。',
         params
       );
     case "conflict-short-value-not-applied":
@@ -1017,15 +1022,19 @@ export default function TerminologyPlayground({
           const fatalDiagnostics = parsed.diagnostics.filter((d) =>
             FATAL_DIAGNOSTIC_TYPES.has(d.type)
           );
-          logger.error(
-            "[TermPlayground] fatal invalid term segments in input:",
-            fatalDiagnostics
-          );
-          if (parsed.metaWarnings.length > 0) {
-            logger.info(
-              "[TermPlayground] metacharacter warnings:",
-              parsed.metaWarnings
+          logger
+            .child("options")
+            .error(
+              "[TermPlayground] fatal invalid term segments in input:",
+              fatalDiagnostics
             );
+          if (parsed.metaWarnings.length > 0) {
+            logger
+              .child("options")
+              .debug(
+                "[TermPlayground] metacharacter warnings:",
+                parsed.metaWarnings
+              );
           }
           setComputed({
             parsed,
@@ -1083,7 +1092,7 @@ export default function TerminologyPlayground({
           selectDisplayedResults(results, { limit: DISPLAY_LIMIT });
 
         // 控制台输出完整所有 issue/detail，不受 UI 展示上限影响。
-        logger.info("[TermPlayground]", {
+        logger.child("options").debug("[TermPlayground]", {
           termCount,
           uniqueConflictPairs,
           independentTermCount,
@@ -1098,7 +1107,7 @@ export default function TerminologyPlayground({
         });
         const allIssues = results.flatMap((entry) => entry.assertion.issues);
         if (allIssues.length > 0) {
-          logger.error("[TermPlayground]", allIssues);
+          logger.child("options").error("[TermPlayground]", allIssues);
         }
 
         setComputed({
@@ -1388,7 +1397,7 @@ export default function TerminologyPlayground({
     // 切换接口选择器不会重置结果区，若读 selectedApi 会输出与 rawRequest 矛盾的结论。
     const isBatch =
       !!selectedApi.useBatchFetch &&
-      API_SPE_TYPES.batch.has(selectedApi.apiType);
+      supportsServiceFeature(selectedApi, "batch");
     const apiSnapshot = {
       apiName: selectedApi.apiName || selectedApi.apiType || "",
       apiType: selectedApi.apiType,
@@ -1604,7 +1613,7 @@ export default function TerminologyPlayground({
   const availableApis = useMemo(() => {
     const list = Array.isArray(transApis) ? transApis : [];
     return list
-      .filter((api) => api && api.apiSlug && api.isDisabled !== true)
+      .filter((api) => api?.apiSlug && isApiAvailableFor(api, "translate"))
       .map(fillApiDefaults);
   }, [transApis]);
   // AI 测试接口选择：首帧渲染即进行有效性归一化，确保永远向 MUI Select 传递合法 value。
@@ -2657,8 +2666,7 @@ export default function TerminologyPlayground({
                                 0,
                                 aiGlossaryExpanded ? undefined : DISPLAY_LIMIT
                               )
-                              .map(
-                              ({ source, key, value }) => {
+                              .map(({ source, key, value }) => {
                                 const delivery = deliveryMap?.get(key);
                                 return (
                                   <Typography
@@ -2697,8 +2705,7 @@ export default function TerminologyPlayground({
                                     )}
                                   </Typography>
                                 );
-                              }
-                            )}
+                              })}
                             {aiTestState.glossaryEntries.length >
                               DISPLAY_LIMIT && (
                               <Button
@@ -3128,8 +3135,7 @@ export default function TerminologyPlayground({
                             0,
                             aiGlossaryExpanded ? undefined : DISPLAY_LIMIT
                           )
-                          .map(
-                          ({ source, key, value }) => {
+                          .map(({ source, key, value }) => {
                             const sourceLabel =
                               source === "input"
                                 ? i18n(
@@ -3246,8 +3252,7 @@ export default function TerminologyPlayground({
                                 </td>
                               </tr>
                             );
-                          }
-                        )}
+                          })}
                       </tbody>
                     </table>
                     {aiTestState.glossaryEntries.length > DISPLAY_LIMIT && (

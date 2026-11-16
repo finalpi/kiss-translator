@@ -19,14 +19,16 @@ import {
   OPT_TRANBOX_TRIGGER_DBLCLICK,
   OPT_TRANBOX_INTERACT_CLICK,
   OPT_TRANBOX_INTERACT_DBLCLICK,
+  DEFAULT_TRANBOX_HOVER_DELAY,
 } from "../config";
 import {
   getTranBoxViewportWidth,
   getTranBoxViewportHeight,
 } from "../libs/tranboxPosition";
+import { normalizeTranbtnAppearance } from "../config/tranbtn";
 
-const TRANBTN_SIZE = 40;
 const TRANBTN_MOUSE_GAP = isMobile ? 16 : 12;
+const MAX_SOURCE_SENTENCE_LENGTH = 1000;
 
 function getPointerPosition(e) {
   const touch = e?.changedTouches?.[0] || e?.touches?.[0];
@@ -77,18 +79,19 @@ function getVisibleViewportBounds() {
   return { left, top, right: left + width, bottom: top + height };
 }
 
-function clampButtonPosition(left, top) {
+function clampButtonPosition(left, top, btnSize) {
   const viewport = getVisibleViewportBounds();
   return {
-    x: limitButtonPosition(left, viewport.left, viewport.right - TRANBTN_SIZE),
-    y: limitButtonPosition(top, viewport.top, viewport.bottom - TRANBTN_SIZE),
+    x: limitButtonPosition(left, viewport.left, viewport.right - btnSize),
+    y: limitButtonPosition(top, viewport.top, viewport.bottom - btnSize),
   };
 }
 
 function getPointerButtonPosition(
   pointerPosition,
   btnOffsetX = 0,
-  btnOffsetY = 0
+  btnOffsetY = 0,
+  btnSize
 ) {
   if (!pointerPosition) return null;
 
@@ -99,14 +102,14 @@ function getPointerButtonPosition(
   let left = pointerPosition.x + TRANBTN_MOUSE_GAP + offsetX;
   let top = pointerPosition.y + TRANBTN_MOUSE_GAP + offsetY;
 
-  if (left + TRANBTN_SIZE > viewport.right) {
-    left = pointerPosition.x - TRANBTN_MOUSE_GAP - TRANBTN_SIZE + offsetX;
+  if (left + btnSize > viewport.right) {
+    left = pointerPosition.x - TRANBTN_MOUSE_GAP - btnSize + offsetX;
   }
-  if (top + TRANBTN_SIZE > viewport.bottom) {
-    top = pointerPosition.y - TRANBTN_MOUSE_GAP - TRANBTN_SIZE + offsetY;
+  if (top + btnSize > viewport.bottom) {
+    top = pointerPosition.y - TRANBTN_MOUSE_GAP - btnSize + offsetY;
   }
 
-  return clampButtonPosition(left, top);
+  return clampButtonPosition(left, top, btnSize);
 }
 
 function getEventPath(e) {
@@ -134,7 +137,7 @@ function isTranboxEvent(e) {
 function isPanelInteractiveTarget(target) {
   return Boolean(
     target?.closest?.(
-      'button, input, textarea, select, [role="tab"], [role="button"]'
+      'button, input, textarea, select, [role="tab"], [role="button"], [role="option"], [role="menuitem"]'
     )
   );
 }
@@ -147,6 +150,10 @@ function isTranButtonEvent(e) {
   return getEventPath(e).some((node) =>
     node?.classList?.contains?.("KT-tranbtn")
   );
+}
+
+function isFabEvent(e) {
+  return getEventPath(e).some((node) => node?.id === APP_CONSTS.fabID);
 }
 
 function isUsableRect(rect) {
@@ -176,42 +183,164 @@ function getSelectionRects(selection) {
   }
 }
 
-function getSelectionButtonPosition(rect, btnOffsetX = 0, btnOffsetY = 0) {
+function getSelectionButtonPosition(
+  rect,
+  btnOffsetX = 0,
+  btnOffsetY = 0,
+  btnSize
+) {
   if (!rect) return null;
 
   const offsetX = toFiniteNumber(btnOffsetX);
   const offsetY = toFiniteNumber(btnOffsetY);
-  return clampButtonPosition(rect.right + offsetX, rect.bottom + offsetY);
+  return clampButtonPosition(
+    rect.right + offsetX,
+    rect.bottom + offsetY,
+    btnSize
+  );
 }
 
-function getTargetContext(target) {
+function getContextInfo(container, element) {
+  const context = (container?.textContent || element?.textContent || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const contextContainer = container || element;
+  return {
+    context: context.slice(0, MAX_SOURCE_SENTENCE_LENGTH),
+    contextTagName: contextContainer?.tagName?.toLowerCase() || "",
+    contextTruncated: context.length > MAX_SOURCE_SENTENCE_LENGTH,
+  };
+}
+
+function getTargetContextInfo(target) {
   const element =
     target?.nodeType === Node.ELEMENT_NODE ? target : target?.parentElement;
   const container = element?.closest?.(
     "p, li, blockquote, article, section, main, div"
   );
-  return (container?.textContent || element?.textContent || "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 1000);
+  return getContextInfo(container, element);
 }
 
-function getSelectionContext(selection) {
+function normalizeContextText(value) {
+  return String(value || "").replace(/\s+/g, " ");
+}
+
+function getSelectionContainer(selection, target) {
+  const node =
+    selection?.rangeCount > 0
+      ? selection.getRangeAt(0).commonAncestorContainer
+      : target;
+  const element =
+    node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+  return (
+    element?.closest?.("p, li, blockquote, article, section, main, div") ||
+    element
+  );
+}
+
+function getSelectionBoundaryOffsets(selection, container) {
+  try {
+    if (!selection || selection.rangeCount === 0 || !container) return null;
+    const range = selection.getRangeAt(0);
+    const ownerDocument = container.ownerDocument || document;
+    const startRange = ownerDocument.createRange();
+    const endRange = ownerDocument.createRange();
+    startRange.selectNodeContents(container);
+    endRange.selectNodeContents(container);
+    startRange.setEnd(range.startContainer, range.startOffset);
+    endRange.setEnd(range.endContainer, range.endOffset);
+    return {
+      start: normalizeContextText(startRange.toString()).length,
+      end: normalizeContextText(endRange.toString()).length,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getSelectionSentence(selection, target) {
   try {
     if (!selection || selection.rangeCount === 0) return "";
+    const selectedText = selection.toString()?.trim() || "";
+    if (!selectedText) return "";
+
+    const container = getSelectionContainer(selection, target);
+    const fullText = normalizeContextText(container?.textContent || "");
+    if (!fullText) return selectedText.slice(0, MAX_SOURCE_SENTENCE_LENGTH);
+
+    const offsets = getSelectionBoundaryOffsets(selection, container);
+    const start = Math.min(
+      Math.max(offsets?.start ?? fullText.indexOf(selectedText), 0),
+      fullText.length
+    );
+    const end = Math.min(
+      Math.max(offsets?.end ?? start + selectedText.length, start),
+      fullText.length
+    );
+
+    let sentenceStart = 0;
+    for (let index = Math.max(start - 1, 0); index >= 0; index -= 1) {
+      if (/[.!?。！？…]/.test(fullText[index])) {
+        sentenceStart = index + 1;
+        break;
+      }
+    }
+
+    let sentenceEnd = fullText.length;
+    for (let index = end; index < fullText.length; index += 1) {
+      if (/[.!?。！？…]/.test(fullText[index])) {
+        sentenceEnd = index + 1;
+        break;
+      }
+    }
+
+    const sentence = fullText.slice(sentenceStart, sentenceEnd).trim();
+    if (sentence.length <= MAX_SOURCE_SENTENCE_LENGTH) return sentence;
+
+    const selectedStart = Math.max(start - sentenceStart, 0);
+    const windowStart = Math.max(
+      0,
+      Math.min(
+        selectedStart - Math.floor(MAX_SOURCE_SENTENCE_LENGTH / 2),
+        sentence.length - MAX_SOURCE_SENTENCE_LENGTH
+      )
+    );
+    return sentence.slice(
+      windowStart,
+      windowStart + MAX_SOURCE_SENTENCE_LENGTH
+    );
+  } catch {
+    return "";
+  }
+}
+
+function getSelectionSource(selection, target) {
+  const text = selection?.toString()?.trim() || "";
+  if (!text) return null;
+
+  const sentence = getSelectionSentence(selection, target);
+  const url =
+    typeof window !== "undefined" && typeof window.location?.href === "string"
+      ? window.location.href
+      : "";
+  if (!sentence && !url) return null;
+
+  return { text, sentence, url };
+}
+
+function getSelectionContextInfo(selection) {
+  try {
+    if (!selection || selection.rangeCount === 0) return null;
     const node = selection.getRangeAt(0).commonAncestorContainer;
     const element =
       node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
     const container = element?.closest?.(
       "p, li, blockquote, article, section, main, div"
     );
-    if (!container) return "";
-    return (container?.textContent || element?.textContent || "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 1000);
+    if (!container) return null;
+    return getContextInfo(container, element);
   } catch {
-    return "";
+    return null;
   }
 }
 
@@ -227,6 +356,7 @@ export default function useSelectionController({
   const {
     hideTranBtn = false,
     triggerMode,
+    triggerHoverDelay = DEFAULT_TRANBOX_HOVER_DELAY,
     btnPositionMode = OPT_TRANBOX_BTN_POSITION_FIXED,
     btnOffsetX = 0,
     btnOffsetY = 0,
@@ -234,11 +364,18 @@ export default function useSelectionController({
     skipLangs = [],
   } = tranboxSetting;
 
-  const [showBox, setShowBox] = useState(false);
+  const { btnSize } = normalizeTranbtnAppearance(tranboxSetting);
+
+  // Historical setting name: any falsy value pins the panel, while an absent
+  // one was never declared and must keep the pre-follow behaviour.
+  const isPinnedBox = hideClickAway !== undefined && !hideClickAway;
+
+  const [showBox, updateShowBox] = useState(false);
   const [showBtn, setShowBtn] = useState(false);
   const [selectedText, setSelText] = useState("");
   const [text, setText] = useState("");
   const [textContext, setTextContext] = useState("");
+  const [selectionSource, setSelectionSource] = useState(null);
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [followBoxSize, setFollowBoxSize] = useState(null);
   const positionFollowBox = useCallback(
@@ -267,10 +404,75 @@ export default function useSelectionController({
       if (snapshot?.rect && snapshot.source !== "panel")
         positionFollowBox(snapshot.rect);
     };
-    update();
     window.addEventListener("resize", update);
     return () => window.removeEventListener("resize", update);
   }, [followSelection, showBox, positionFollowBox]);
+  const selectionRevisionRef = useRef(0);
+  const selectionAtPressRef = useRef(null);
+
+  // The follow gate runs after awaits, so it reads visibility from this mirror
+  // rather than from a value captured when the handler was created.
+  const showBoxRef = useRef(false);
+
+  useEffect(() => {
+    showBoxRef.current = showBox;
+  }, [showBox]);
+
+  const setShowBox = useCallback((next) => {
+    if (next === false) selectionRevisionRef.current += 1;
+    updateShowBox(next);
+  }, []);
+
+  useEffect(() => {
+    const invalidatePendingSelection = () => {
+      selectionRevisionRef.current += 1;
+    };
+    const handlePointerDown = (event) => {
+      invalidatePendingSelection();
+      if (isFabEvent(event)) {
+        setShowBtn(false);
+        return;
+      }
+      // Keep the dismissed range across later presses while the panel is hidden.
+      // Only a selection change should allow that range to trigger again.
+      if (!showBox || isTranboxEvent(event) || isTranButtonEvent(event)) return;
+      const selection = window.getSelection();
+      selectionAtPressRef.current = {
+        text: selection?.toString()?.trim(),
+        anchorNode: selection?.anchorNode,
+        anchorOffset: selection?.anchorOffset,
+        focusNode: selection?.focusNode,
+        focusOffset: selection?.focusOffset,
+      };
+    };
+    const handleVisibilityChange = () => {
+      if (document.hidden) invalidatePendingSelection();
+    };
+    const handleSelectionChange = () => {
+      const previous = selectionAtPressRef.current;
+      if (!previous || previous.changed) return;
+      const selection = window.getSelection();
+      if (
+        previous.text !== selection?.toString()?.trim() ||
+        ["anchorNode", "anchorOffset", "focusNode", "focusOffset"].some(
+          (key) => previous[key] !== selection?.[key]
+        )
+      ) {
+        previous.changed = true;
+        selectionAtPressRef.current = null;
+      }
+    };
+    window.addEventListener("pointerdown", handlePointerDown, true);
+    window.addEventListener("blur", invalidatePendingSelection);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    document.addEventListener("selectionchange", handleSelectionChange);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown, true);
+      window.removeEventListener("blur", invalidatePendingSelection);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      document.removeEventListener("selectionchange", handleSelectionChange);
+    };
+  }, [showBox]);
 
   const getActiveSelection = useCallback(
     () =>
@@ -289,7 +491,9 @@ export default function useSelectionController({
     if (!showBtn) return;
 
     const keepButtonInViewport = () => {
-      setPosition((current) => clampButtonPosition(current.x, current.y));
+      setPosition((current) =>
+        clampButtonPosition(current.x, current.y, btnSize)
+      );
     };
     const visualViewport = window.visualViewport;
     window.addEventListener("resize", keepButtonInViewport);
@@ -298,39 +502,49 @@ export default function useSelectionController({
       window.removeEventListener("resize", keepButtonInViewport);
       visualViewport?.removeEventListener("resize", keepButtonInViewport);
     };
-  }, [showBtn]);
+  }, [showBtn, btnSize]);
 
-  const commitSelectionSnapshot = useCallback((snapshot) => {
-    if (!snapshot?.text) return;
+  const commitSelectionSnapshot = useCallback(
+    (snapshot) => {
+      if (!snapshot?.text) return;
 
-    pendingSelectionRef.current = snapshot;
-    setSelText(snapshot.text);
-    setTextContext(snapshot.context);
-    setShowBtn(false);
-    setText(snapshot.text);
-    setShowBox(true);
-  }, []);
+      pendingSelectionRef.current = snapshot;
+      setSelText(snapshot.text);
+      setTextContext(snapshot.context);
+      setSelectionSource(snapshot.selectionSource || null);
+      setShowBtn(false);
+      setText(snapshot.text);
+      setShowBox(true);
+    },
+    [setShowBox]
+  );
 
   const handleOpenTranbox = useCallback(
-    async (inputText) => {
+    (inputText) => {
       const pending = pendingSelectionRef.current;
       const snapshot =
         inputText && pending?.text !== inputText
-          ? { text: inputText, context: "", source: "manual" }
+          ? {
+              text: inputText,
+              context: "",
+              source: "manual",
+              selectionSource: null,
+            }
           : pending || { text: selectedText, context: "", source: "manual" };
 
-      if (
-        window.parent !== window &&
-        snapshot?.source !== "panel" &&
-        (await frameBridgeRef.current?.forward({ ...snapshot, open: true }))
-      ) {
-        setShowBtn(false);
-        setShowBox(false);
-        return;
+      if (window.parent !== window && snapshot?.source !== "panel") {
+        return Promise.resolve(
+          frameBridgeRef.current?.forward({ ...snapshot, open: true })
+        ).then((forwarded) => {
+          if (forwarded) {
+            setShowBtn(false);
+            setShowBox(false);
+          } else commitSelectionSnapshot(snapshot);
+        });
       }
       commitSelectionSnapshot(snapshot);
     },
-    [commitSelectionSnapshot, selectedText]
+    [commitSelectionSnapshot, selectedText, setShowBox]
   );
 
   const createSelectionSnapshot = useCallback(
@@ -345,11 +559,24 @@ export default function useSelectionController({
         ? selectionRects.lastRect
         : rect;
 
+      const selectionContext = getSelectionContextInfo(selection);
+      const contextInfo = selectionContext?.context
+        ? selectionContext
+        : getTargetContextInfo(target);
+
       return {
         text: currentSelectedText,
-        context: getSelectionContext(selection) || getTargetContext(target),
+        context: contextInfo.context,
         pointerPosition,
         source,
+        selectionSource:
+          source === "page"
+            ? {
+                ...getSelectionSource(selection, target),
+                contextTagName: contextInfo.contextTagName,
+                contextTruncated: contextInfo.contextTruncated,
+              }
+            : null,
         rect,
         lastRect,
       };
@@ -383,8 +610,9 @@ export default function useSelectionController({
   );
 
   const processSelectionSnapshot = useCallback(
-    async (snapshot) => {
+    async (snapshot, revision = selectionRevisionRef.current) => {
       const generation = ++selectionGenerationRef.current;
+      if (revision !== selectionRevisionRef.current) return;
       if (!snapshot?.text) {
         frameBridgeRef.current?.clear();
         remoteSelectionRef.current = null;
@@ -417,6 +645,7 @@ export default function useSelectionController({
       // 目标语言/纯数字命中时，统一禁用划词按钮与翻译框弹出
       const suppressed = await shouldSuppressSelection(snapshot.text);
       if (generation !== selectionGenerationRef.current) return;
+      if (revision !== selectionRevisionRef.current) return;
       if (suppressed) {
         setShowBtn(false);
         setShowBox(false);
@@ -428,7 +657,19 @@ export default function useSelectionController({
         return;
       }
 
-      if (snapshot.rect && followSelection && snapshot.source !== "panel") {
+      // A pinned panel the user is already looking at must stay put: moving it
+      // onto the fresh selection covers the text being translated, and a pinned
+      // panel never dismisses itself to uncover it again.
+      // Visibility is read here, after the awaits, because the panel may have
+      // been opened while this selection was still settling.
+      const panelIsVisible = showBoxRef.current;
+
+      if (
+        snapshot.rect &&
+        followSelection &&
+        snapshot.source !== "panel" &&
+        (!isPinnedBox || !panelIsVisible)
+      ) {
         positionFollowBox(snapshot.rect);
       }
 
@@ -452,17 +693,20 @@ export default function useSelectionController({
           ? getPointerButtonPosition(
               snapshot.pointerPosition,
               btnOffsetX,
-              btnOffsetY
+              btnOffsetY,
+              btnSize
             )
           : getSelectionButtonPosition(
               snapshot.lastRect,
               btnOffsetX,
-              btnOffsetY
+              btnOffsetY,
+              btnSize
             ) ||
             getPointerButtonPosition(
               snapshot.pointerPosition,
               btnOffsetX,
-              btnOffsetY
+              btnOffsetY,
+              btnSize
             );
 
       if (buttonPosition) {
@@ -479,10 +723,13 @@ export default function useSelectionController({
       btnPositionMode,
       btnOffsetX,
       btnOffsetY,
+      btnSize,
       followSelection,
+      isPinnedBox,
       commitSelectionSnapshot,
       positionFollowBox,
       shouldSuppressSelection,
+      setShowBox,
     ]
   );
 
@@ -534,16 +781,23 @@ export default function useSelectionController({
       frameBridgeRef.current = null;
       bridge.dispose();
     };
-  }, [invalidateSelection]);
+  }, [invalidateSelection, setShowBox]);
 
   const handleSelectionEvent = useCallback(
     async (e) => {
       if (e.button === 2) return;
       if (isTranButtonEvent(e)) return;
+      if (isFabEvent(e)) {
+        selectionRevisionRef.current += 1;
+        setShowBtn(false);
+        return;
+      }
 
       const isFromTranbox = isTranboxEvent(e);
       if (isFromTranbox && isPanelInteractiveEvent(e)) return;
       const target = getOriginalEventTarget(e);
+      const revision = selectionRevisionRef.current;
+      const previousSelection = selectionAtPressRef.current;
 
       // 必须在 await 释放事件循环前获取 selectionRoot，否则 e.composedPath() 会被清空
       const selectionRoot = isFromTranbox
@@ -552,6 +806,7 @@ export default function useSelectionController({
 
       const pointerPosition = getPointerPosition(e);
       await sleep(isFromTranbox ? 0 : 200);
+      if (revision !== selectionRevisionRef.current) return;
 
       selectionRootRef.current = selectionRoot;
 
@@ -565,7 +820,21 @@ export default function useSelectionController({
         target
       );
 
-      await processSelectionSnapshot(snapshot);
+      // Prevent a retained old range from reopening the panel after dismissal.
+      if (
+        !isFromTranbox &&
+        previousSelection?.text &&
+        !previousSelection.changed &&
+        previousSelection.text === snapshot?.text &&
+        ["anchorNode", "anchorOffset", "focusNode", "focusOffset"].every(
+          (key) => previousSelection[key] === selection?.[key]
+        )
+      ) {
+        setShowBtn(false);
+        return;
+      }
+
+      await processSelectionSnapshot(snapshot, revision);
     },
     [createSelectionSnapshot, processSelectionSnapshot]
   );
@@ -600,12 +869,13 @@ export default function useSelectionController({
     }
 
     pendingSelectionRef.current = snapshot;
-    void handleOpenTranbox(snapshot.text);
+    commitSelectionSnapshot(snapshot);
   }, [
     followSelection,
     positionFollowBox,
     createSelectionSnapshot,
-    handleOpenTranbox,
+    commitSelectionSnapshot,
+    setShowBox,
   ]);
 
   const btnEvent = useMemo(() => {
@@ -649,21 +919,11 @@ export default function useSelectionController({
       // selection. Starting a new selection can open a fresh panel on mouseup.
       clickAwayRef.current?.();
     };
-    const handleHideBox = (event) => {
-      if (isTranboxEvent(event) || isTranButtonEvent(event)) return;
-      const selection = window.getSelection();
-      if (selection && selection.toString().trim() !== "") {
-        return; // Ignore click away if user is selecting text on the page
-      }
-      setShowBox(false);
-    };
     window.addEventListener("pointerdown", handlePointerDown, true);
-    window.addEventListener("click", handleHideBox, true);
     return () => {
       window.removeEventListener("pointerdown", handlePointerDown, true);
-      window.removeEventListener("click", handleHideBox, true);
     };
-  }, [hideClickAway]);
+  }, [hideClickAway, setShowBox]);
 
   // 监听翻译框内交互事件（单击/双击选中文本触发新翻译）
   useEffect(() => {
@@ -711,10 +971,12 @@ export default function useSelectionController({
     text,
     setText,
     textContext,
+    selectionSource,
     position,
     setPosition,
     handleOpenTranbox,
     handleToggleTranbox,
     btnEvent,
+    triggerHoverDelay,
   };
 }

@@ -28,9 +28,10 @@ export default function Selection({
   translateVariants = true,
   parseLatex = false,
   extStyles,
+  rule,
 }) {
   const i18n = newI18n(uiLang || "zh");
-  // 1. Manage the panel's size, position, simple mode, and click-away behavior.
+  // 1. Manage the panel's size, position, simple mode, and hide-on-blur setting.
   const {
     boxSize,
     setBoxSize,
@@ -54,20 +55,22 @@ export default function Selection({
     text,
     setText,
     textContext,
+    selectionSource,
     position,
     handleOpenTranbox,
     handleToggleTranbox,
     btnEvent,
     followBoxSize,
     clearFollowBoxSize,
+    triggerHoverDelay,
   } = useSelectionController({
     tranboxSetting,
     followSelection,
+    hideClickAway,
     boxOffsetX,
     boxOffsetY,
     boxSize,
     setBoxPosition,
-    hideClickAway,
   });
 
   // 3. Register global panel shortcuts, including Escape to close.
@@ -111,15 +114,20 @@ export default function Selection({
             langDetector={langDetector}
             translateVariants={translateVariants}
             parseLatex={parseLatex}
+            rule={rule}
             selectionContext={textContext}
+            selectionSource={selectionSource}
           />
         }
 
         {/* Show the floating translation action beside the current selection. */}
         {showBtn && (
           <TranBtn
+            btnSize={tranboxSetting?.btnSize}
+            btnOpacity={tranboxSetting?.btnOpacity}
             position={position}
             btnEvent={btnEvent}
+            hoverDelay={triggerHoverDelay}
             label={i18n("translate", "Translate selection")}
             onTrigger={(e) => {
               e.stopPropagation();

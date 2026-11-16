@@ -47,10 +47,9 @@ test("keeps the selection FAB inside its themed render root", () => {
   expect(button.style.position).toBe("fixed");
   expect(button.style.left).toBe("20px");
   expect(button.style.top).toBe("30px");
-  expect(button.querySelector('[data-testid="TranslateRoundedIcon"]')).not.toBe(
-    null
-  );
-  expect(button.innerHTML).not.toContain("#209CEE");
+  expect(button.querySelector("img").src).toMatch(/^data:image/);
+  expect(button.querySelector("img").draggable).toBe(false);
+  expect(button.style.getPropertyValue("--kt-tranbtn-size")).toBe("32px");
 
   const mouseDown = new MouseEvent("mousedown", {
     bubbles: true,
@@ -111,5 +110,129 @@ test("activates once for a keyboard-generated click", () => {
   });
 
   expect(view.onTrigger).toHaveBeenCalledTimes(1);
+  view.cleanup();
+});
+
+describe("hover trigger delay", () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  test("fires a hover trigger only after the pointer rests for the delay", () => {
+    const view = renderTranBtn({ btnEvent: "onMouseOver", hoverDelay: 300 });
+
+    act(() => {
+      view.button.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true, detail: 1 })
+      );
+    });
+    expect(view.onTrigger).not.toHaveBeenCalled();
+
+    act(() => {
+      jest.advanceTimersByTime(300);
+    });
+    expect(view.onTrigger).toHaveBeenCalledTimes(1);
+    view.cleanup();
+  });
+
+  test("cancels a pending hover trigger when the pointer leaves early", () => {
+    const view = renderTranBtn({ btnEvent: "onMouseOver", hoverDelay: 300 });
+
+    act(() => {
+      view.button.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true, detail: 1 })
+      );
+      view.button.dispatchEvent(
+        new MouseEvent("mouseout", { bubbles: true, detail: 1 })
+      );
+    });
+    act(() => {
+      jest.advanceTimersByTime(300);
+    });
+    expect(view.onTrigger).not.toHaveBeenCalled();
+    view.cleanup();
+  });
+
+  test("keeps the wait when the pointer moves onto the button's own icon", () => {
+    const view = renderTranBtn({ btnEvent: "onMouseOver", hoverDelay: 300 });
+    const icon = view.button.querySelector("img");
+
+    act(() => {
+      view.button.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true, detail: 1 })
+      );
+      // mouseout fires when moving onto a child; the child's mouseover then
+      // bubbles back to the button. That is not a leave, so the pending
+      // trigger must survive and still fire after the delay.
+      view.button.dispatchEvent(
+        new MouseEvent("mouseout", {
+          bubbles: true,
+          detail: 1,
+          relatedTarget: icon,
+        })
+      );
+    });
+    act(() => {
+      jest.advanceTimersByTime(300);
+    });
+    expect(view.onTrigger).toHaveBeenCalledTimes(1);
+    view.cleanup();
+  });
+
+  test("does not fire a pending hover trigger after unmount", () => {
+    const view = renderTranBtn({ btnEvent: "onMouseOver", hoverDelay: 300 });
+
+    act(() => {
+      view.button.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true, detail: 1 })
+      );
+    });
+    view.cleanup();
+    act(() => {
+      jest.advanceTimersByTime(300);
+    });
+    expect(view.onTrigger).not.toHaveBeenCalled();
+  });
+
+  test("keeps the click trigger untouched by a positive delay", () => {
+    const view = renderTranBtn({ btnEvent: "onClick", hoverDelay: 300 });
+
+    act(() => {
+      view.button.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, detail: 1 })
+      );
+    });
+    expect(view.onTrigger).toHaveBeenCalledTimes(1);
+    act(() => {
+      jest.advanceTimersByTime(300);
+    });
+    expect(view.onTrigger).toHaveBeenCalledTimes(1);
+    view.cleanup();
+  });
+});
+
+test("fires immediately on hover when the delay is 0", () => {
+  const view = renderTranBtn({ btnEvent: "onMouseOver", hoverDelay: 0 });
+
+  act(() => {
+    view.button.dispatchEvent(
+      new MouseEvent("mouseover", { bubbles: true, detail: 1 })
+    );
+  });
+  expect(view.onTrigger).toHaveBeenCalledTimes(1);
+  view.cleanup();
+});
+
+test("scales the logo and applies independent appearance preferences", () => {
+  const view = renderTranBtn({ btnSize: 64, btnOpacity: 0.25 });
+  expect(view.button.style.getPropertyValue("--kt-tranbtn-size")).toBe("64px");
+  expect(view.button.style.getPropertyValue("--kt-tranbtn-opacity")).toBe(
+    "0.25"
+  );
+  expect(view.button.querySelector("img").style.width).toBe("64px");
   view.cleanup();
 });

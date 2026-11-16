@@ -1,3 +1,4 @@
+import { decodeHTMLText } from "./htmlTextDecoder";
 import { trustedTypesHelper } from "./trustedTypes";
 
 /**
@@ -39,17 +40,14 @@ export function escapeHTML(str) {
 export function decodeHTMLEntities(str) {
   if (!str || typeof str !== "string") return str;
 
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(
-    trustedTypesHelper.createHTML(str),
-    "text/html"
-  );
-
-  return doc.documentElement.textContent || "";
+  return decodeHTMLText(str);
 }
 
 export const encodeHTMLTranslationText = (text) =>
   String(text || "").replace(/\r\n|\r|\n/g, "<br>");
+
+export const decodeHTMLLineBreaks = (text) =>
+  String(text || "").replace(/<br\s*\/?>/gi, "\n");
 
 export const decodeHTMLTranslationText = (text) =>
   decodeHTMLEntities(String(text || "").replace(/<br\s*\/?>[\t ]*/gi, "\n"));
