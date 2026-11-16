@@ -5,6 +5,22 @@ import { normalizeWordForms } from "../libs/favoriteWordForms";
 
 const DEFAULT_FAVWORDS = {};
 
+function normalizeSource(source) {
+  if (!source || typeof source !== "object") return undefined;
+
+  const sentence =
+    typeof source.sentence === "string"
+      ? source.sentence.trim().slice(0, 1000)
+      : "";
+  const url = typeof source.url === "string" ? source.url.trim() : "";
+  if (!sentence && !url) return undefined;
+
+  return {
+    ...(sentence ? { sentence } : {}),
+    ...(url ? { url } : {}),
+  };
+}
+
 /** Manage favorite words with replayable storage mutations. */
 export function useFavWords() {
   const {
@@ -23,8 +39,13 @@ export function useFavWords() {
       phonetic = "",
       definition = "",
       examples = [],
-      forms = []
+      formsOrSource = [],
+      source = null
     ) => {
+      const forms = Array.isArray(formsOrSource) ? formsOrSource : [];
+      const normalizedSource = normalizeSource(
+        Array.isArray(formsOrSource) ? source : formsOrSource
+      );
       const wordData = {
         createdAt: Date.now(),
         timestamp,
@@ -32,6 +53,7 @@ export function useFavWords() {
         definition,
         examples: Array.isArray(examples) ? [...examples] : examples,
         forms: normalizeWordForms(forms),
+        ...(normalizedSource ? { source: normalizedSource } : {}),
       };
       Object.keys(wordData).forEach((key) => {
         if (
@@ -58,12 +80,20 @@ export function useFavWords() {
 
   /** Merge new words while preserving metadata for existing favorites. */
   const mergeWords = useCallback(
-    (words, formsByWord = {}) => {
+    (words, metadata = {}) => {
       const createdAt = Date.now();
+      const normalizedSource = normalizeSource(metadata?.source);
       const additions = Object.fromEntries(
         words.map((word) => {
-          const forms = normalizeWordForms(formsByWord[word]);
-          return [word, { createdAt, ...(forms.length ? { forms } : {}) }];
+          const forms = normalizeWordForms(metadata[word]);
+          return [
+            word,
+            {
+              createdAt,
+              ...(forms.length ? { forms } : {}),
+              ...(normalizedSource ? { source: normalizedSource } : {}),
+            },
+          ];
         })
       );
       return save((prev) => ({ ...additions, ...prev }));

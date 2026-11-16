@@ -1,5 +1,7 @@
+import { resolveAiDictApiSetting } from "../../libs/aiDictionary";
 import Stack from "@mui/material/Stack";
 import { useId, useMemo, useRef, useState } from "react";
+import { useRevealSearchTarget } from "./SettingsSearchTarget";
 import Typography from "@mui/material/Typography";
 import Accordion from "@mui/material/Accordion";
 import AccordionSummary from "@mui/material/AccordionSummary";
@@ -17,11 +19,12 @@ import Zdic from "../Selection/Zdic";
 import DownloadButton from "./DownloadButton";
 import UploadButton from "./UploadButton";
 import Button from "@mui/material/Button";
+import Link from "@mui/material/Link";
 import ClearAllIcon from "@mui/icons-material/ClearAll";
 import EventNoteIcon from "@mui/icons-material/EventNote";
 import Alert from "@mui/material/Alert";
 import { isSingleChineseChar, isValidWord } from "../../libs/utils";
-import { kissLog } from "../../libs/log";
+import { logger } from "../../libs/log";
 import { useConfirm } from "../../hooks/Confirm";
 import { useSetting } from "../../hooks/Setting";
 import { dictHandlers } from "../Selection/DictHandler";
@@ -29,41 +32,18 @@ import {
   DEFAULT_SETTING,
   DEFAULT_TRANBOX_SETTING,
   OPT_DICT_MAP,
-  PROMPT_MODE_FOLLOW_API,
-  findPromptBySlug,
   resolveApiPromptList,
 } from "../../config";
 
-function resolveAiDictApiSetting({
-  aiDictApiSlug,
-  aiDictPromptSlug = PROMPT_MODE_FOLLOW_API,
-  prompts = [],
-  transApis = [],
-}) {
-  if (!aiDictApiSlug || aiDictApiSlug === "-") {
-    return null;
+function getSafeSourceUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:"
+      ? url.href
+      : "";
+  } catch {
+    return "";
   }
-
-  const apiSetting = transApis.find((api) => api.apiSlug === aiDictApiSlug);
-  if (!apiSetting) {
-    return null;
-  }
-
-  if (aiDictPromptSlug === PROMPT_MODE_FOLLOW_API) {
-    return apiSetting.dictPrompt ? apiSetting : null;
-  }
-
-  const prompt = findPromptBySlug(prompts, aiDictPromptSlug);
-  if (!prompt) {
-    return null;
-  }
-
-  return {
-    ...apiSetting,
-    dictPromptSlug: prompt.slug,
-    dictPrompt: prompt.systemPrompt,
-    dictUserPrompt: prompt.userPrompt,
-  };
 }
 
 /**
@@ -79,6 +59,7 @@ function FavAccordion({
   createdAt,
   phonetic,
   definition,
+  source,
   tranboxSetting,
   transApis,
   prompts,
@@ -114,6 +95,10 @@ function FavAccordion({
   const partOfSpeech = definitionPreview.match(
     /^(?:adj|adv|art|aux|conj|det|interj|num|prep|pron|n|v)(?:\.|(?=\s|$))/i
   )?.[0];
+  const sourceSentence =
+    typeof source?.sentence === "string" ? source.sentence.trim() : "";
+  const sourceUrl = typeof source?.url === "string" ? source.url.trim() : "";
+  const safeSourceUrl = sourceUrl ? getSafeSourceUrl(sourceUrl) : "";
 
   // 展开折叠切换处理
   const handleChange = (e) => {
@@ -149,6 +134,41 @@ function FavAccordion({
         {/* 仅在展开时懒加载渲染词典解释与联想提示组件，以提升长列表性能 */}
         {expanded && (
           <Stack spacing={2}>
+            {(sourceSentence || sourceUrl) && (
+              <Box className="kt-word-card__source">
+                <Typography className="kt-word-card__source-title">
+                  {i18n("favorite_word_source", "来源")}
+                </Typography>
+                <Box className="kt-word-card__source-content">
+                  {sourceSentence && (
+                    <Typography className="kt-word-card__source-item">
+                      <strong>
+                        {i18n("favorite_word_source_sentence", "句子")}：
+                      </strong>
+                      {sourceSentence}
+                    </Typography>
+                  )}
+                  {sourceUrl && (
+                    <Typography className="kt-word-card__source-item">
+                      <strong>
+                        {i18n("favorite_word_source_url", "网页")}：
+                      </strong>
+                      {safeSourceUrl ? (
+                        <Link
+                          href={safeSourceUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          {sourceUrl}
+                        </Link>
+                      ) : (
+                        sourceUrl
+                      )}
+                    </Typography>
+                  )}
+                </Box>
+              </Box>
+            )}
             {(defaultDictAvailable || aiDictAvailable) && (
               <Box>
                 {aiDictAvailable ? (
@@ -191,7 +211,11 @@ function FavAccordion({
                       {defaultDictAvailable && dictTab === "default" && (
                         <>
                           {isWord && OPT_DICT_MAP.has(enDict) && (
-                            <DictCont text={word} enDict={enDict} />
+                            <DictCont
+                              text={word}
+                              enDict={enDict}
+                              source={source}
+                            />
                           )}
                           {isChineseChar && <Zdic text={word} />}
                         </>
@@ -217,7 +241,7 @@ function FavAccordion({
                 ) : (
                   <>
                     {isWord && OPT_DICT_MAP.has(enDict) && (
-                      <DictCont text={word} enDict={enDict} />
+                      <DictCont text={word} enDict={enDict} source={source} />
                     )}
                     {isChineseChar && <Zdic text={word} />}
                   </>
@@ -238,6 +262,7 @@ function FavAccordion({
 export default function FavWords() {
   const i18n = useI18n();
   const [showMoreExports, setShowMoreExports] = useState(false);
+  useRevealSearchTarget(setShowMoreExports, ["export_translation"]);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const pendingSave = useRef(false);
@@ -260,7 +285,7 @@ export default function FavWords() {
     try {
       await operation();
     } catch (error) {
-      kissLog("save favorite words", error);
+      logger.child("options").error("save favorite words", error);
       setSaveError(i18n("error_got_some_wrong"));
     } finally {
       pendingSave.current = false;
@@ -483,7 +508,7 @@ export default function FavWords() {
           .join("\n");
         tranList.push([title, tran].join("\n"));
       } catch (err) {
-        kissLog("export translation", err);
+        logger.child("options").error("export translation", err);
       }
     }
 
@@ -577,6 +602,7 @@ export default function FavWords() {
                 createdAt={entry?.createdAt}
                 phonetic={entry?.phonetic}
                 definition={entry?.definition}
+                source={entry?.source}
                 tranboxSetting={tranboxSetting}
                 transApis={resolvedTransApis}
                 prompts={prompts}

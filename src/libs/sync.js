@@ -1,3 +1,9 @@
+import { syncTerminology } from "./terminologySync";
+import {
+  TERMINOLOGY_SYNC_KEY,
+  exportTerminologyDataset,
+  applyTerminologyDataset,
+} from "./terminologyStorage";
 import {
   APP_LCNAME,
   KV_SETTING_KEY,
@@ -10,6 +16,8 @@ import {
   STOKEY_SETTING,
   STOKEY_RULES,
   STOKEY_WORDS,
+  CURRENT_SETTINGS_VERSION,
+  getSettingVersion,
 } from "../config";
 import {
   getSyncWithDefault,
@@ -32,9 +40,8 @@ import {
   apiFetchText,
 } from "../apis";
 import { sha256, removeEndchar } from "./utils";
-import { createClient, getPatcher } from "webdav";
 import { fetchPatcher } from "./fetch";
-import { kissLog } from "./log";
+import { logger } from "./log";
 import { encryptSyncValue, decryptSyncValue } from "./syncCrypto";
 import { requireSyncDataConsent } from "./dataConsent";
 import {
@@ -44,23 +51,36 @@ import {
 } from "./storageState";
 
 let webdavRequestPatched = false;
+const canSyncAutomatically = async (automatic) =>
+  !automatic || (await getSyncWithDefault()).autoSync !== false;
 const GIST_SYNC_DESCRIPTION = "kiss translator sync files";
+
+let webdavModulePromise = null;
+const loadWebdav = () => {
+  if (!webdavModulePromise) {
+    webdavModulePromise = import("webdav");
+  }
+  return webdavModulePromise;
+};
 
 /**
  * 确保 WebDAV 库的 request 通道只被补丁一次。
  *
+ * @param {Object} webdav 动态加载的 webdav 模块
  * @returns {void}
  */
-const ensureWebdavRequestPatched = () => {
+const ensureWebdavRequestPatched = (webdav) => {
   if (webdavRequestPatched) return;
   webdavRequestPatched = true;
 
   // WebDAV 同步只在实际使用前安装补丁，避免模块导入时产生隐式全局副作用。
-  getPatcher().patch("request", (opts) => {
+  webdav.getPatcher().patch("request", (opts) => {
     return fetchPatcher(opts.url, {
       method: opts.method,
       headers: opts.headers,
       body: opts.data,
+      // PROPFIND shows the current file, so the GET must not come from the HTTP cache.
+      cache: "no-store",
     });
   });
 };
@@ -79,12 +99,13 @@ const ensureWebdavRequestPatched = () => {
  */
 const syncByWebdav = async (
   data,
-  { syncUrl, syncUser, syncKey },
+  { syncUrl, syncUser, syncKey, automatic },
   { forceWrite = false } = {}
 ) => {
-  ensureWebdavRequestPatched();
+  const webdav = await loadWebdav();
+  ensureWebdavRequestPatched(webdav);
 
-  const client = createClient(syncUrl, {
+  const client = webdav.createClient(syncUrl, {
     username: syncUser,
     password: syncKey,
   });
@@ -92,13 +113,17 @@ const syncByWebdav = async (
   const filename = `/${APP_LCNAME}/${data.key}`;
 
   // 1. 若云端应用根目录不存在，则创建对应文件夹
+  if (!(await canSyncAutomatically(automatic))) return;
   if ((await client.exists(pathname)) === false) {
+    if (!(await canSyncAutomatically(automatic))) return;
     await client.createDirectory(pathname);
   }
 
   // 2. 若云端文件已存在，则读取云端内容，对比 updateAt 时间戳以决定“谁覆盖谁”
+  if (!(await canSyncAutomatically(automatic))) return;
   const isExist = await client.exists(filename);
   if (isExist && !forceWrite) {
+    if (!(await canSyncAutomatically(automatic))) return;
     const cont = await client.getFileContents(filename, { format: "text" });
     const webData = JSON.parse(cont);
 
@@ -109,6 +134,7 @@ const syncByWebdav = async (
   }
 
   // 3. 若云端没有该文件或本地数据更新，则把本地最新数据上传覆盖云端文件
+  if (!(await canSyncAutomatically(automatic))) return;
   await client.putFileContents(filename, JSON.stringify(data, null, 2));
   return data;
 };
@@ -121,7 +147,8 @@ const syncByWebdav = async (
  * @param {string} params.syncKey 访问 Worker 的校验密钥
  * @returns {Promise<Object>} 同步后的最新数据
  */
-const syncByWorker = async (data, { syncUrl, syncKey }) => {
+const syncByWorker = async (data, { syncUrl, syncKey, automatic }) => {
+  if (!(await canSyncAutomatically(automatic))) return;
   syncUrl = removeEndchar(syncUrl, "/");
   return await apiSyncData(`${syncUrl}/sync`, syncKey, data);
 };
@@ -158,7 +185,7 @@ const getGistFilename = (key) => {
 
 const syncByGist = async (
   data,
-  { syncUrl, syncKey, destinationRevision = 0 },
+  { syncUrl, syncKey, destinationRevision = 0, automatic },
   { forceWrite = false } = {}
 ) => {
   let gistId = getGistId(syncUrl);
@@ -166,6 +193,7 @@ const syncByGist = async (
   const content = JSON.stringify(data, null, 2);
 
   if (!gistId) {
+    if (!(await canSyncAutomatically(automatic))) return;
     const existingGist = await findGistByDescription(syncKey);
     if (existingGist?.id) {
       gistId = existingGist.id;
@@ -180,6 +208,7 @@ const syncByGist = async (
   }
 
   if (!gistId) {
+    if (!(await canSyncAutomatically(automatic))) return;
     const gist = await apiCreateGist(
       syncKey,
       {
@@ -198,9 +227,11 @@ const syncByGist = async (
     return data;
   }
 
+  if (!(await canSyncAutomatically(automatic))) return;
   const gist = await apiGetGist(gistId, syncKey);
   const file = gist.files?.[filename] || gist.files?.[data.key];
   if (file && !forceWrite) {
+    if (!(await canSyncAutomatically(automatic))) return;
     const fileContent = file.content || (await apiFetchText(file.raw_url));
     const gistData = JSON.parse(fileContent);
     if (gistData.updateAt >= data.updateAt) {
@@ -208,6 +239,7 @@ const syncByGist = async (
     }
   }
 
+  if (!(await canSyncAutomatically(automatic))) return;
   await apiUpdateGistFile(gistId, syncKey, filename, content);
   return data;
 };
@@ -339,6 +371,7 @@ export const syncData = async (
     deferCommit = false,
     isRequestCurrent = () => true,
     syncConfig,
+    automatic = false,
   } = {}
 ) => {
   // 获取同步服务配置
@@ -352,7 +385,17 @@ export const syncData = async (
     destinationRevision = 0,
   } = syncConfig || (await getSyncWithDefault());
 
-  if (!isRequestCurrent()) return;
+  const canSync = async () => canSyncAutomatically(automatic);
+  if (!isRequestCurrent() || !(await canSync())) return;
+
+  if (
+    key === KV_SETTING_KEY &&
+    getSettingVersion(value) > CURRENT_SETTINGS_VERSION
+  ) {
+    throw new Error(
+      "Local settings were written by a newer client; update before syncing"
+    );
+  }
 
   const syncEncryptKey = syncEncryptKeyOverride ?? savedSyncEncryptKey;
 
@@ -384,6 +427,7 @@ export const syncData = async (
     syncUser,
     syncKey,
     destinationRevision,
+    ...(automatic && { automatic }),
   };
 
   const encryptedData = await encryptSyncData(data, syncEncryptKey);
@@ -417,12 +461,16 @@ export const syncData = async (
   if (isFirstSync && originalMeta.pendingUpload && !forceRemoteRead) {
     // A failed first attempt preserves edits, but does not prove that this
     // passphrase can read the existing backup. Validate before replacing it.
+    if (!(await canSync())) return;
     const backup = await syncByType(
       syncType,
       { ...encryptedData, updateAt: 0 },
       args
     );
-    if (!backup) throw new Error("Unable to verify the existing sync backup");
+    if (!backup) {
+      if (!(await canSync())) return;
+      throw new Error("Unable to verify the existing sync backup");
+    }
     const verified = await decryptSyncData(backup, syncEncryptKey);
     JSON.parse(verified.data.value);
 
@@ -439,9 +487,11 @@ export const syncData = async (
       args.syncUrl = currentConfig.syncUrl;
     }
   }
+  if (!(await canSync())) return;
   const encryptedOrLegacyRes = await syncByType(syncType, encryptedData, args);
 
   if (!encryptedOrLegacyRes) {
+    if (!(await canSync())) return;
     throw new Error("sync data got err", key);
   }
 
@@ -450,6 +500,14 @@ export const syncData = async (
     syncEncryptKey
   );
   const newVal = JSON.parse(res.value);
+  if (
+    key === KV_SETTING_KEY &&
+    getSettingVersion(newVal) > CURRENT_SETTINGS_VERSION
+  ) {
+    throw new Error(
+      "Settings were written by a newer client; update before syncing"
+    );
+  }
   // 首次同步时本地与远端时间戳可能同为 0；此时内容不同仍需应用远端数据。
   const isNew =
     res.updateAt > updateAt ||
@@ -513,10 +571,13 @@ export const syncData = async (
   const migrateLegacy = async () => {
     if (encrypted || forceRemoteRead) return;
     try {
+      if (!(await canSync())) return;
       await migratePlainSyncData(syncType, res, args, syncEncryptKey);
     } catch (error) {
       // A failed follow-up cannot undo an already committed data adoption.
-      kissLog("Unable to encrypt legacy remote sync data", key, error);
+      logger
+        .child("sync")
+        .warn("Unable to encrypt legacy remote sync data", key, error);
     }
   };
   const result = { value: newVal, isNew };
@@ -626,9 +687,9 @@ const syncSetting = async (options) => {
  */
 export const trySyncSetting = async () => {
   try {
-    await syncSetting();
+    await syncSetting({ automatic: true });
   } catch (err) {
-    kissLog("sync setting", err.message);
+    logger.child("sync").error("sync setting", err.message);
   }
 };
 
@@ -644,9 +705,9 @@ const syncRules = async (options) => {
  */
 export const trySyncRules = async () => {
   try {
-    await syncRules();
+    await syncRules({ automatic: true });
   } catch (err) {
-    kissLog("sync user rules", err.message);
+    logger.child("sync").error("sync user rules", err.message);
   }
 };
 
@@ -662,9 +723,9 @@ const syncWords = async (options) => {
  */
 export const trySyncWords = async () => {
   try {
-    await syncWords();
+    await syncWords({ automatic: true });
   } catch (err) {
-    kissLog("sync fav words", err.message);
+    logger.child("sync").error("sync fav words", err.message);
   }
 };
 
@@ -731,6 +792,17 @@ export const changeSyncEncryptKey = async ({
     applyRemote: false,
   });
 
+  const terminology = await syncTerminology({
+    syncEncryptKey: oldEncryptKey,
+    forceRemoteRead: true,
+    persistMeta: false,
+    applyRemote: false,
+  });
+  // Validate every dataset before adopting remote data or changing the key.
+  if (terminology?.isNew)
+    await storage.withTransaction((transaction) =>
+      applyTerminologyDataset(terminology.value, transaction)
+    );
   // 三类远端数据都通过旧口令校验后，才把较新的版本写入本地并开始重加密。
   if (synced.setting?.isNew) await setSetting(synced.setting.value);
   if (synced.rules?.isNew) await setRules(synced.rules.value);
@@ -749,6 +821,12 @@ export const changeSyncEncryptKey = async ({
   await forceSyncDataWithEncryptKey(
     KV_WORDS_KEY,
     await getWordsWithDefault(),
+    newEncryptKey
+  );
+
+  await forceSyncDataWithEncryptKey(
+    TERMINOLOGY_SYNC_KEY,
+    await exportTerminologyDataset(),
     newEncryptKey
   );
 

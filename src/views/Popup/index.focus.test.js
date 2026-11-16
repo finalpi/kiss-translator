@@ -15,6 +15,7 @@ let mockSetting;
 jest.mock("./loadData", () => ({
   loadPopupData: () => mockSendTabMsg(),
 }));
+jest.mock("./disabledPage", () => ({ loadDisabledPopupData: jest.fn() }));
 
 jest.mock("../../libs/msg", () => ({
   getCurTab: jest.fn(async () => ({
@@ -30,10 +31,14 @@ jest.mock("../../libs/browser", () => ({
   browser: { runtime: { openOptionsPage: jest.fn() } },
 }));
 
-jest.mock("../../libs/log", () => ({
-  ...jest.requireActual("../../libs/log"),
-  kissLog: jest.fn(),
-}));
+jest.mock("../../libs/log", () =>
+  jest.requireActual("../../testUtils/scopedLogMock").withScopedLogMock(
+    (() => ({
+      ...jest.requireActual("../../libs/log"),
+      kissLog: jest.fn(),
+    }))()
+  )
+);
 
 jest.mock("../../hooks/I18n", () => ({
   useI18n: () => (key) => key,
@@ -45,11 +50,12 @@ jest.mock("../../hooks/Setting", () => ({
 
 jest.mock("./Header", () => {
   const React = require("react");
-  return ({ openSettings }) =>
+  return ({ openSettings, children }) =>
     React.createElement(
       "div",
       null,
       "header",
+      children,
       React.createElement(
         "button",
         { type: "button", onClick: openSettings },
@@ -79,6 +85,8 @@ jest.mock("../Selection/TranForm", () => {
       })
     );
 });
+
+jest.mock("./PopupTextPanel", () => jest.requireMock("../Selection/TranForm"));
 
 describe("Popup focus", () => {
   beforeEach(() => {

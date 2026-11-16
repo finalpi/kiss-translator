@@ -64,6 +64,25 @@ export function sanitizeFrameSelection(value) {
     text: value.text,
     context:
       typeof value.context === "string" ? value.context.slice(0, 1000) : "",
+    selectionSource:
+      value.selectionSource && typeof value.selectionSource === "object"
+        ? {
+            text: value.text.slice(0, 100000),
+            sentence:
+              typeof value.selectionSource.sentence === "string"
+                ? value.selectionSource.sentence.slice(0, 1000)
+                : "",
+            url:
+              typeof value.selectionSource.url === "string"
+                ? value.selectionSource.url.slice(0, 4096)
+                : "",
+            contextTagName:
+              typeof value.selectionSource.contextTagName === "string"
+                ? value.selectionSource.contextTagName.slice(0, 32)
+                : "",
+            contextTruncated: value.selectionSource.contextTruncated === true,
+          }
+        : null,
     source: "page",
     rect: rect(value.rect),
     lastRect: rect(value.lastRect),

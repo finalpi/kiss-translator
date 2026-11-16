@@ -17,6 +17,41 @@ describe("selection Material 3 shapes", () => {
     expect(itemRule).toContain("flex-shrink: 0");
   });
 
+  // 非 Windows 默认环境不变式：标题栏拖拽图标 cursor 仍为裸 move 关键字，
+  // 与改动前逐字一致（改动前后都应通过）。
+  test("keeps the plain move keyword cursor for the header drag glyph by default", () => {
+    const dragRule = TRANSLATION_PANEL_STYLES.match(
+      /\.kt-tranbox-header__drag\s*\{([^}]*)\}/
+    )?.[1];
+    expect(dragRule).toContain("cursor: move");
+  });
+
+  // 真红主路径：TRANSLATION_PANEL_STYLES 在模块加载期定型（平台不会在会
+  // 话中途改变，模块加载期求值属可接受），Windows 分支须经
+  // jest.isolateModules 先行 mock navigator 再重新求值模块后断言拖拽图
+  // 标携带位图光标（同根因：Windows Chromium 单色光标反白缺陷）。当前实
+  // 现为字面量 cursor: move，本用例首跑必红。
+  test("uses the shared bitmap cursor for the header drag glyph on Windows Chromium", () => {
+    jest.isolateModules(() => {
+      Object.defineProperty(window.navigator, "userAgentData", {
+        configurable: true,
+        value: { platform: "Windows" },
+      });
+      try {
+        const {
+          TRANSLATION_PANEL_STYLES: winStyles,
+        } = require("../../components/TranslationPanel/styles");
+        const dragRule = winStyles.match(
+          /\.kt-tranbox-header__drag\s*\{([^}]*)\}/
+        )?.[1];
+        expect(dragRule).toContain("cursor: url(data:image/png;base64,");
+        expect(dragRule).toContain(") 16 16, move");
+      } finally {
+        delete window.navigator.userAgentData;
+      }
+    });
+  });
+
   test("uses restrained surface and menu radii", () => {
     expect(TRANSLATION_PANEL_STYLES).toMatch(
       /\.kt-translation-panel\s*\{[^}]*border-radius:\s*16px !important;/
@@ -56,9 +91,11 @@ describe("selection Material 3 shapes", () => {
       /\.KT-tranbtn:active\s*\{([^}]*)\}/
     )?.[1];
 
-    expect(baseRule).toContain("border-radius: 12px");
-    expect(baseRule).toContain("width: 40px");
-    expect(baseRule).toContain("height: 40px");
+    expect(baseRule).toContain(
+      "border-radius: calc(var(--kt-tranbtn-size, 32px) * .16)"
+    );
+    expect(baseRule).toContain("width: var(--kt-tranbtn-size, 32px)");
+    expect(baseRule).toContain("height: var(--kt-tranbtn-size, 32px)");
     expect(baseRule).toContain("border: 0");
     expect(baseRule).toContain("color: var(--kt-onpric)");
     expect(baseRule).not.toContain("animation:");
@@ -66,15 +103,15 @@ describe("selection Material 3 shapes", () => {
     expect(SELECTION_STYLES).toMatch(
       /@media\s*\(hover:\s*hover\)\s*\{\s*\.KT-tranbtn:hover/
     );
-    expect(hoverRule).toContain("var(--kt-onpric) 8%");
+    expect(baseRule).toContain("background: transparent");
+    expect(baseRule).toContain("box-shadow: none");
+    expect(hoverRule).not.toContain("background:");
+    expect(activeRule).not.toContain("background:");
     expect(hoverRule).not.toContain("border-radius");
     expect(activeRule).toContain("transform: scale(.94)");
-    expect(SELECTION_STYLES).toMatch(
-      /\.KT-tranbtn svg\s*\{[^}]*fill:\s*currentColor;[^}]*\}/
-    );
-    expect(SELECTION_STYLES).not.toMatch(
-      /\.KT-tranbtn svg\s*\{[^}]*border-radius:/
-    );
+    expect(baseRule).toContain("opacity: var(--kt-tranbtn-opacity, 1)");
+    expect(hoverRule).toContain("opacity: 1");
+    expect(SELECTION_STYLES).toMatch(/\.KT-tranbtn:focus\s*\{[^}]*opacity: 1/);
   });
 
   test("keeps a complete keyboard focus fallback", () => {
@@ -85,13 +122,13 @@ describe("selection Material 3 shapes", () => {
       /\.KT-tranbtn:focus-visible\s*\{([^}]*)\}/
     )?.[1];
 
-    expect(fallbackRule).toContain("outline: none");
-    expect(fallbackRule).toContain("inset 0 0 0 3px var(--kt-pri)");
+    expect(fallbackRule).toContain("outline: 2px solid var(--kt-pri)");
+    expect(fallbackRule).toContain("outline-offset: 2px");
     expect(SELECTION_STYLES).toContain("@supports selector(:focus-visible)");
     expect(SELECTION_STYLES).toMatch(
-      /@supports selector\(:focus-visible\)\s*\{[\s\S]*?\.KT-tranbtn:focus\s*\{[^}]*box-shadow:\s*var\(--kt-shadow-2\);/
+      /@supports selector\(:focus-visible\)\s*\{[\s\S]*?\.KT-tranbtn:focus\s*\{[^}]*outline:\s*none;/
     );
-    expect(visibleRule).toContain("outline: none");
-    expect(visibleRule).toContain("inset 0 0 0 3px var(--kt-pri)");
+    expect(visibleRule).toContain("outline: 2px solid var(--kt-pri)");
+    expect(visibleRule).toContain("outline-offset: 2px");
   });
 });

@@ -8,6 +8,8 @@ import MenuItem from "@mui/material/MenuItem";
 import Link from "@mui/material/Link";
 import { useSetting } from "../../hooks/Setting";
 import { useI18n } from "../../hooks/I18n";
+import { supportsApiCapability } from "../../config/serviceSelection";
+import { isApiConfigured } from "../../config/serviceSelection";
 import { useAlert } from "../../hooks/Alert";
 import { isAutoTranslateClipboardSupported, isExt } from "../../libs/client";
 import { browser } from "../../libs/browser";
@@ -43,10 +45,15 @@ import {
 import { useShortcut } from "../../hooks/Shortcut";
 import ShortcutInput from "./ShortcutInput";
 import { useFab } from "../../hooks/Fab";
-import { normalizeFabAppearance } from "../../config/fab";
+import {
+  FAB_CLICK_ACTION_MENU,
+  FAB_CLICK_ACTION_TRANSLATE,
+  FAB_CLICK_ACTION_POPUP,
+  normalizeFabAppearance,
+} from "../../config/fab";
 import { sendBgMsg } from "../../libs/msg";
 import { tryClearCaches } from "../../libs/cache";
-import { kissLog, LogLevel } from "../../libs/log";
+import { LogLevel, logger } from "../../libs/log";
 import UploadButton from "./UploadButton";
 import DownloadButton from "./DownloadButton";
 import ValidationInput from "../../hooks/ValidationInput";
@@ -81,7 +88,7 @@ export function ExtCommands() {
           }
         })
         .catch((err) => {
-          console.error("fetch commands error:", err);
+          logger.child("options").error("fetch commands error:", err);
         });
     }
   }, []);
@@ -259,12 +266,20 @@ export default function Settings() {
   };
 
   // Resolve the backup schema before merging with the current settings.
+  // FAB preferences live in their own storage key, so restore them separately.
   const handleImport = async (data) => {
     try {
-      const imported = JSON.parse(data);
+      const { fab: importedFab, ...imported } = JSON.parse(data);
       updateSetting({ ...imported, version: getSettingVersion(imported) });
+      if (
+        importedFab &&
+        typeof importedFab === "object" &&
+        !Array.isArray(importedFab)
+      ) {
+        updateFab(importedFab);
+      }
     } catch (err) {
-      kissLog("import setting", err);
+      logger.child("options").error("import setting", err);
     }
   };
 
@@ -300,7 +315,7 @@ export default function Settings() {
   // 解构 FAB 悬浮球的显隐状态及点击后的默认交互行为
   const {
     isHide = false,
-    fabClickAction = 0,
+    fabClickAction = FAB_CLICK_ACTION_MENU,
     hideExceptionList = "",
   } = fab || {};
   const { halfHide } = normalizeFabAppearance(fab);
@@ -319,7 +334,7 @@ export default function Settings() {
         >
           <UploadButton text={i18n("import")} handleImport={handleImport} />
           <DownloadButton
-            handleData={() => JSON.stringify(setting, null, 2)}
+            handleData={() => JSON.stringify({ ...setting, fab }, null, 2)}
             text={i18n("export")}
             fileName={`kiss-setting_v2_${Date.now()}.json`}
           />
@@ -393,7 +408,7 @@ export default function Settings() {
                 }
               />
             )}
-            {/* 点击悬浮球时触发的行为 (直接展示菜单或立即启动全文双语翻译) */}
+            {/* Choose the action triggered by clicking the floating button. */}
             <Grid item xs={12} sm={12} md={6} lg={6}>
               <TextField
                 select
@@ -404,8 +419,15 @@ export default function Settings() {
                 label={i18n("fab_click_action")}
                 onChange={(e) => updateFab({ fabClickAction: e.target.value })}
               >
-                <MenuItem value={0}>{i18n("fab_click_menu")}</MenuItem>
-                <MenuItem value={1}>{i18n("fab_click_translate")}</MenuItem>
+                <MenuItem value={FAB_CLICK_ACTION_MENU}>
+                  {i18n("fab_click_menu")}
+                </MenuItem>
+                <MenuItem value={FAB_CLICK_ACTION_TRANSLATE}>
+                  {i18n("fab_click_translate")}
+                </MenuItem>
+                <MenuItem value={FAB_CLICK_ACTION_POPUP}>
+                  {i18n("fab_click_popup")}
+                </MenuItem>
               </TextField>
             </Grid>
             {/* 单个 DOM 文本块触发网页翻译的最小有效文本长度 */}
@@ -532,6 +554,31 @@ export default function Settings() {
                     {item}
                   </MenuItem>
                 ))}
+                {!OPT_LANGDETECTOR_ALL.includes(langDetector) &&
+                  langDetector !== "-" &&
+                  !(setting.transApis || []).some(
+                    (api) =>
+                      api.apiSlug === langDetector &&
+                      !api.isDisabled &&
+                      isApiConfigured(api) &&
+                      supportsApiCapability(api, "detectLanguage")
+                  ) && (
+                    <MenuItem value={langDetector}>
+                      {i18n("service_configured_unavailable")}
+                    </MenuItem>
+                  )}
+                {(setting.transApis || [])
+                  .filter(
+                    (api) =>
+                      !api.isDisabled &&
+                      isApiConfigured(api) &&
+                      supportsApiCapability(api, "detectLanguage")
+                  )
+                  .map((api) => (
+                    <MenuItem key={api.apiSlug} value={api.apiSlug}>
+                      {api.apiName}
+                    </MenuItem>
+                  ))}
               </TextField>
             </Grid>
             {/* Translate variants of the same language, such as Simplified and Traditional Chinese. */}
@@ -575,6 +622,7 @@ export default function Settings() {
                 name="logLevel"
                 value={logLevel}
                 label={i18n("log_level")}
+                helperText={i18n("diagnostics_console_hint")}
                 onChange={handleChange}
               >
                 {Object.values(LogLevel).map(({ value, name }) => (

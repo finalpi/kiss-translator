@@ -4,11 +4,23 @@ import { createRoot } from "react-dom/client";
 import TranBox, { getOverflowMenuPosition } from "./TranBox";
 import { MSG_OPEN_SEPARATE_WINDOW } from "../../config/msg.js";
 import { sendBgMsg } from "../../libs/msg.js";
+import {
+  composeTerminology,
+  terminologySourceList,
+} from "../../libs/terminology";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const mockToggleDarkMode = jest.fn();
+let mockReadingFontSize = 16;
+const mockUpdateTranbox = jest.fn();
 
+jest.mock("../../hooks/Tranbox", () => ({
+  useTranbox: () => ({
+    tranboxSetting: { fontSize: mockReadingFontSize },
+    updateTranbox: mockUpdateTranbox,
+  }),
+}));
 jest.mock("../../hooks/Setting", () => ({
   SettingProvider: ({ children }) => children,
 }));
@@ -31,9 +43,10 @@ jest.mock("../../components/Logo", () => ({
   __esModule: true,
   default: () => null,
 }));
+const mockTranForm = jest.fn(() => null);
 jest.mock("./TranForm.js", () => ({
   __esModule: true,
-  default: () => null,
+  default: (props) => mockTranForm(props),
 }));
 
 describe.each(["document", "shadow"])("TranBox header in %s", (scope) => {
@@ -43,6 +56,8 @@ describe.each(["document", "shadow"])("TranBox header in %s", (scope) => {
   let handlers;
 
   beforeEach(() => {
+    mockReadingFontSize = 16;
+    mockUpdateTranbox.mockReset();
     container = document.createElement("div");
     host = document.createElement("div");
     document.body.appendChild(host);
@@ -99,7 +114,26 @@ describe.each(["document", "shadow"])("TranBox header in %s", (scope) => {
   const openMenu = () => act(() => actions()[1].click());
   const activeElement = () => container.getRootNode().activeElement;
 
-  test("keeps the lock, overflow and close actions always reachable", () => {
+  test("subscribes to font changes without using the stale selection settings snapshot", () => {
+    const props = render();
+    openMenu();
+    act(() =>
+      container.querySelector('[aria-label="tranbox_font_increase"]').click()
+    );
+    expect(mockUpdateTranbox).toHaveBeenCalledWith({ fontSize: 17 });
+    mockReadingFontSize = 24;
+    act(() => root.render(<TranBox {...props} />));
+    expect(container.querySelector("output").textContent).toBe("24px");
+    expect(
+      container.querySelector("[data-reading-font-size]").dataset
+        .readingFontSize
+    ).toBe("24");
+    expect(
+      container.querySelector('[aria-label="tranbox_font_increase"]').disabled
+    ).toBe(true);
+  });
+
+  test("keeps the pin, overflow and close actions always reachable", () => {
     render();
 
     expect(header()).not.toBeNull();
@@ -120,6 +154,8 @@ describe.each(["document", "shadow"])("TranBox header in %s", (scope) => {
       "btn_tip_simple_style",
       "btn_tip_follow_selection",
       "btn_tip_dark_mode",
+      "",
+      "",
     ]);
   });
 
@@ -152,11 +188,11 @@ describe.each(["document", "shadow"])("TranBox header in %s", (scope) => {
     press("ArrowUp");
     expect(activeElement()).toBe(menuItems()[1]);
     press("End");
-    expect(activeElement()).toBe(menuItems()[3]);
+    expect(activeElement()).toBe(menuItems()[5]);
     press("ArrowDown");
     expect(activeElement()).toBe(menuItems()[0]);
     press("ArrowUp");
-    expect(activeElement()).toBe(menuItems()[3]);
+    expect(activeElement()).toBe(menuItems()[5]);
     press("Home");
     expect(activeElement()).toBe(menuItems()[0]);
     press("Escape");
@@ -178,7 +214,7 @@ describe.each(["document", "shadow"])("TranBox header in %s", (scope) => {
           })
         )
       );
-      expect(activeElement()).toBe(menuItems()[key === "ArrowUp" ? 3 : 0]);
+      expect(activeElement()).toBe(menuItems()[key === "ArrowUp" ? 5 : 0]);
     }
   );
 
@@ -290,7 +326,7 @@ describe.each(["document", "shadow"])("TranBox header in %s", (scope) => {
     expect(mockToggleDarkMode).toHaveBeenCalled();
   });
 
-  test("the lock and close actions keep working from the action cluster", () => {
+  test("the pin and close actions keep working from the action cluster", () => {
     render();
 
     act(() => actions()[0].click());
@@ -300,7 +336,7 @@ describe.each(["document", "shadow"])("TranBox header in %s", (scope) => {
     expect(handlers.setShowBox).toHaveBeenCalledWith(false);
   });
 
-  test.each(["lock", "content"])(
+  test.each(["pin", "content"])(
     "clicking the real panel %s closes the menu and stays isolated from the page",
     (target) => {
       render();
@@ -311,7 +347,7 @@ describe.each(["document", "shadow"])("TranBox header in %s", (scope) => {
       try {
         act(() => {
           const element =
-            target === "lock"
+            target === "pin"
               ? actions()[0]
               : container.querySelector(".kt-tranbox-content");
           element.click();
@@ -319,7 +355,7 @@ describe.each(["document", "shadow"])("TranBox header in %s", (scope) => {
 
         expect(menu()).toBeNull();
         expect(onPageClick).not.toHaveBeenCalled();
-        if (target === "lock") {
+        if (target === "pin") {
           expect(handlers.setHideClickAway).toHaveBeenCalled();
         }
       } finally {
@@ -342,11 +378,20 @@ describe.each(["document", "shadow"])("TranBox header in %s", (scope) => {
 
   test("toggle state is exposed to assistive tech", () => {
     render({ hideClickAway: true, simpleStyle: true, followSelection: true });
-    expect(actions()[0].getAttribute("aria-pressed")).toBe("true");
+    expect(actions()[0].getAttribute("aria-pressed")).toBe("false");
+    expect(
+      actions()[0].querySelector('[data-testid="PushPinOutlinedIcon"]')
+    ).not.toBeNull();
 
     openMenu();
     expect(menuItems()[1].getAttribute("aria-checked")).toBe("true");
     expect(menuItems()[2].getAttribute("aria-checked")).toBe("true");
+
+    render({ hideClickAway: false });
+    expect(actions()[0].getAttribute("aria-pressed")).toBe("true");
+    expect(
+      actions()[0].querySelector('[data-testid="PushPinIcon"]')
+    ).not.toBeNull();
   });
 
   test("clicking outside closes the overflow menu", () => {
@@ -390,5 +435,113 @@ describe("overflow menu viewport placement", () => {
     expect(
       position.top + Math.min(menu.height, position.maxHeight)
     ).toBeLessThanOrEqual(viewport.height - 8);
+  });
+});
+
+describe("TranBox scene terminology resolution", () => {
+  let container;
+  let root;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    mockTranForm.mockClear();
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  test("uses tranboxSetting as scene when rule is not provided (standalone / popup)", () => {
+    const tranboxSetting = { fromLang: "auto", toLang: "zh-CN" };
+    act(() => {
+      root.render(
+        <TranBox
+          showBox={true}
+          tranboxSetting={tranboxSetting}
+          transApis={[]}
+          prompts={[]}
+        />
+      );
+    });
+
+    expect(mockTranForm).toHaveBeenCalled();
+    const lastProps = mockTranForm.mock.calls.at(-1)[0];
+    expect(lastProps.scene).toBe(tranboxSetting);
+    expect(lastProps.scene.terms).toBeUndefined();
+    expect(lastProps.scene.termsList).toBeUndefined();
+  });
+
+  test("merges rule terminology when rule is provided (web page triggered)", () => {
+    const tranboxSetting = { fromLang: "auto", toLang: "zh-CN" };
+    const rule = {
+      terms: "apple,苹果手机",
+      aiTerms: "prompt,提示词",
+      termsList: ["table_page_1"],
+    };
+
+    act(() => {
+      root.render(
+        <TranBox
+          showBox={true}
+          tranboxSetting={tranboxSetting}
+          rule={rule}
+          transApis={[]}
+          prompts={[]}
+        />
+      );
+    });
+
+    expect(mockTranForm).toHaveBeenCalled();
+    const lastProps = mockTranForm.mock.calls.at(-1)[0];
+    expect(lastProps.scene).toEqual({
+      fromLang: "auto",
+      toLang: "zh-CN",
+      terms: "apple,苹果手机",
+      aiTerms: "prompt,提示词",
+      termsList: ["table_page_1"],
+    });
+  });
+
+  test("preserves inherited inline terms and site-table priority", () => {
+    const rule = {
+      terms: "component,部件",
+      termsList: ["site"],
+      terminologySources: [
+        { terms: "component,部件", termsList: ["site"] },
+        { terms: "React,框架\nRedux,状态库", aiTerms: "API,全局接口" },
+      ],
+    };
+    act(() => {
+      root.render(
+        <TranBox
+          showBox
+          tranboxSetting={{}}
+          rule={rule}
+          transApis={[]}
+          prompts={[]}
+        />
+      );
+    });
+    const scene = mockTranForm.mock.calls.at(-1)[0].scene;
+    const resolved = composeTerminology(terminologySourceList(scene), [
+      {
+        id: "site",
+        terms: "React,站点框架",
+        aiTerms: "API,站点接口",
+        normalMatchMode: "auto",
+      },
+    ]);
+    expect(scene.terminologySources).toEqual(rule.terminologySources);
+    expect(
+      resolved.normalEntries.map(({ key, value }) => [key, value])
+    ).toEqual([
+      ["component", "部件"],
+      ["React", "站点框架"],
+      ["Redux", "状态库"],
+    ]);
+    expect(resolved.glossary).toEqual({ API: "站点接口" });
   });
 });

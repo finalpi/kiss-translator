@@ -9,17 +9,36 @@ import CopyBtn from "./CopyBtn";
 import { useAsyncNow } from "../../hooks/Fetch";
 import { dictHandlers } from "./DictHandler";
 import { useI18n } from "../../hooks/I18n";
+import { loadDictionary } from "./loadDictionary";
 import { normalizeWordForms } from "../../libs/favoriteWordForms";
 
-function DictionaryEntry({ text, enDict }) {
+function DictionaryEntry({
+  text,
+  enDict,
+  source,
+  toLang,
+  apiSetting,
+  translateVariants,
+}) {
   const i18n = useI18n();
   const dict = dictHandlers[enDict];
   const lookup = useMemo(
     () =>
-      dict ? async (query) => ({ value: await dict.apiFn(query) }) : undefined,
-    [dict]
+      dict
+        ? async (query) => ({
+            value: await loadDictionary({
+              dict,
+              text: query.text,
+              toLang,
+              apiSetting,
+              translateVariants,
+            }),
+          })
+        : undefined,
+    [dict, toLang, apiSetting, translateVariants]
   );
-  const { loading, error, data: response } = useAsyncNow(lookup, text);
+  const query = useMemo(() => ({ text, toLang }), [text, toLang]);
+  const { loading, error, data: response } = useAsyncNow(lookup, query);
   const data = response?.value;
   const ready = !dict || Boolean(error) || response != null;
   const result = !loading && !error ? data : null;
@@ -48,6 +67,7 @@ function DictionaryEntry({ text, enDict }) {
             <FavBtn
               word={realWord}
               forms={forms}
+              source={source}
               ready={ready}
               title={i18n("collect")}
             />
@@ -72,14 +92,31 @@ function DictionaryEntry({ text, enDict }) {
   );
 }
 
-export default function DictCont({ text, enDict }) {
+export default function DictCont({
+  text,
+  enDict,
+  source = null,
+  toLang,
+  apiSetting,
+  translateVariants = true,
+}) {
   // A query/dictionary change owns a fresh lookup, so stale data cannot be saved
   // as another word's forms, even before the async hook's effect has run.
   return (
     <DictionaryEntry
-      key={JSON.stringify([enDict, text])}
+      key={JSON.stringify([
+        enDict,
+        text,
+        toLang,
+        apiSetting?.apiSlug,
+        translateVariants,
+      ])}
       text={text}
       enDict={enDict}
+      source={source}
+      toLang={toLang}
+      apiSetting={apiSetting}
+      translateVariants={translateVariants}
     />
   );
 }

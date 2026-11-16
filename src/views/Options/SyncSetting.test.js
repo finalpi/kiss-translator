@@ -7,11 +7,17 @@ import {
   OPT_SYNCTYPE_WORKER,
 } from "../../config";
 import SyncSetting from "./SyncSetting";
+import { syncSettingAndRules } from "../../libs/sync";
+import SettingsSearchTarget from "./SettingsSearchTarget";
+import { getSettingsSearchPrerequisite } from "./search";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 let mockInitialSyncType = OPT_SYNCTYPE_WORKER;
+let mockInitialSyncConfig = {};
 const mockUpdateSync = jest.fn();
+const mockAlertSuccess = jest.fn();
+const mockAlertError = jest.fn();
 
 jest.mock("../../hooks/I18n", () => ({
   useI18n: () => (key) => key,
@@ -28,6 +34,7 @@ jest.mock("../../hooks/Sync", () => {
         syncUser: "",
         syncKey: "",
         syncEncryptKey: "",
+        ...mockInitialSyncConfig,
       }));
       const updateSync = async (patch) => {
         mockUpdateSync(patch);
@@ -41,8 +48,8 @@ jest.mock("../../hooks/Sync", () => {
 
 jest.mock("../../hooks/Alert", () => ({
   useAlert: () => ({
-    error: jest.fn(),
-    success: jest.fn(),
+    error: mockAlertError,
+    success: mockAlertSuccess,
   }),
 }));
 
@@ -59,17 +66,32 @@ jest.mock("../../libs/sync", () => ({
   syncSettingAndRules: jest.fn(),
 }));
 
-jest.mock("../../libs/log", () => ({
-  kissLog: jest.fn(),
-  LogLevel: { INFO: { value: 1 } },
-}));
+jest.mock("../../libs/log", () =>
+  jest.requireActual("../../testUtils/scopedLogMock").withScopedLogMock(
+    (() => ({
+      kissLog: jest.fn(),
+      LogLevel: { INFO: { value: 1 } },
+    }))()
+  )
+);
 
-function renderSyncSetting(initialSyncType) {
+function renderSyncSetting(initialSyncType, target = "", syncConfig = {}) {
   mockInitialSyncType = initialSyncType;
+  mockInitialSyncConfig = syncConfig;
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
-  act(() => root.render(<SyncSetting />));
+  act(() =>
+    root.render(
+      <SettingsSearchTarget
+        target={target}
+        label={target}
+        fallbackLabel={getSettingsSearchPrerequisite("/sync", target)}
+      >
+        <SyncSetting />
+      </SettingsSearchTarget>
+    )
+  );
 
   const radios = () => [
     ...container.querySelectorAll('.kt-sync-method[role="radio"]'),
@@ -94,9 +116,82 @@ function pressKey(element, key) {
   });
 }
 
+describe("SyncSetting automatic sync", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  test("defaults old configurations to enabled and saves the switch as a boolean", async () => {
+    const view = renderSyncSetting(OPT_SYNCTYPE_WORKER);
+    const input = view.container.querySelector('[name="autoSync"]');
+    expect(input.checked).toBe(true);
+    expect(
+      view.container.querySelector("#auto-sync-description").textContent
+    ).toBe("auto_sync_description");
+
+    await act(async () => input.click());
+    expect(mockUpdateSync).toHaveBeenLastCalledWith({ autoSync: false });
+    expect(input.checked).toBe(false);
+    await act(async () => input.click());
+    expect(mockUpdateSync).toHaveBeenLastCalledWith({ autoSync: true });
+    view.unmount();
+  });
+
+  test.each([false, true])(
+    "manual sync remains available when automatic sync is off (failure: %s)",
+    async (fails) => {
+      const view = renderSyncSetting(OPT_SYNCTYPE_GIST, "", {
+        autoSync: false,
+        syncKey: "test-token",
+        syncEncryptKey: "test-passphrase",
+      });
+      expect(view.container.querySelector('[name="autoSync"]').checked).toBe(
+        false
+      );
+      const button = [...view.container.querySelectorAll("button")].find(
+        (element) => element.textContent.trim() === "sync_now"
+      );
+      expect(button.disabled).toBe(false);
+      if (fails) {
+        syncSettingAndRules.mockRejectedValueOnce(new Error("network failed"));
+      } else {
+        syncSettingAndRules.mockResolvedValueOnce({});
+      }
+      await act(async () => button.click());
+      expect(syncSettingAndRules).toHaveBeenCalledWith();
+      if (fails) {
+        expect(mockAlertError).toHaveBeenCalledWith(
+          "sync_failed: network failed"
+        );
+      } else {
+        expect(mockAlertSuccess).toHaveBeenCalledWith("sync_success");
+      }
+      expect(button.disabled).toBe(false);
+      view.unmount();
+    }
+  );
+});
+
 describe("SyncSetting method selection", () => {
   beforeEach(() => {
     mockUpdateSync.mockReset();
+  });
+
+  test("guides a Gist URL search to the sync type without changing preferences", async () => {
+    const view = renderSyncSetting(OPT_SYNCTYPE_GIST, "data_sync_url");
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 300)));
+
+    expect(view.container.querySelector('[name="syncUrl"]')).toBeNull();
+    expect(
+      view.container.querySelector(
+        '[data-settings-search-target="data_sync_url"]'
+      )
+    ).toBe(view.container.querySelector(".kt-sync-methods"));
+    expect(view.radioFor(OPT_SYNCTYPE_GIST).getAttribute("aria-checked")).toBe(
+      "true"
+    );
+    expect(mockUpdateSync).not.toHaveBeenCalled();
+    view.unmount();
   });
 
   test("keeps only the selected method in the tab order", () => {

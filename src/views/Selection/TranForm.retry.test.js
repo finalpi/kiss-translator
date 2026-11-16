@@ -3,7 +3,8 @@ import { act, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { apiTranslate } from "../../apis";
 import { mountShadowHost } from "../../libs/shadowHost";
-import TranForm from "./TranForm";
+import AiDictCont from "./AiDictCont";
+import TranslationPanelContent from "../../components/TranslationPanel/Content";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -22,7 +23,7 @@ jest.mock("../../hooks/Setting", () => ({
   useSetting: () => ({ setting: {} }),
 }));
 jest.mock("./DictCont", () => () => null);
-jest.mock("./AiDictCont", () => () => null);
+jest.mock("./AiDictCont", () => jest.fn(() => null));
 jest.mock("./SugCont", () => () => null);
 jest.mock("./Zdic", () => () => null);
 jest.mock("./CopyBtn", () => () => null);
@@ -53,7 +54,12 @@ function TranslationPanel({ initialText = "Source text", marker, ...props }) {
   const [text, setText] = useState(initialText);
   return (
     <div data-marker={marker}>
-      <TranForm {...baseProps} {...props} text={text} setText={setText} />
+      <TranslationPanelContent
+        {...baseProps}
+        {...props}
+        text={text}
+        setText={setText}
+      />
     </div>
   );
 }
@@ -98,10 +104,14 @@ describe("Explicit translation submissions", () => {
     container.querySelector(
       '.kt-translation-source textarea:not([aria-hidden="true"])'
     );
-  const submitButton = () =>
-    container.querySelector(
-      'button[title="submit"], button[title="translate"]'
-    );
+  const submitButton = () => container.querySelector('button[title="submit"]');
+  const clickSubmit = () => {
+    act(() => input().focus());
+    const button = submitButton();
+    expect(button).not.toBeNull();
+    act(() => button.click());
+    return button;
+  };
   const resultValues = () =>
     [
       ...container.querySelectorAll(
@@ -123,7 +133,6 @@ describe("Explicit translation submissions", () => {
   const pressEnter = (options = {}) => {
     const event = new KeyboardEvent("keydown", {
       key: "Enter",
-      ctrlKey: true,
       bubbles: true,
       cancelable: true,
       ...options,
@@ -131,6 +140,34 @@ describe("Explicit translation submissions", () => {
     act(() => input().dispatchEvent(event));
     return event;
   };
+
+  test("changes reading size during a stream without replacing the form or restarting translation", async () => {
+    const deferred = createDeferred();
+    apiTranslate.mockReturnValueOnce(deferred.promise);
+    await renderPanel({ fontSize: 16 });
+    const source = input();
+    await act(async () =>
+      apiTranslate.mock.calls[0][0].onStreamChunk({
+        text: "Partial translation",
+        isComplete: false,
+      })
+    );
+    await renderPanel({ fontSize: 24 });
+    expect(apiTranslate).toHaveBeenCalledTimes(1);
+    expect(input()).toBe(source);
+    expect(input().value).toBe("Source text");
+    expect(resultText()).toBe("Partial translation");
+    expect(
+      container
+        .querySelector("[data-reading-font-size]")
+        .style.getPropertyValue("--kt-reading-font-size")
+    ).toBe("24px");
+    await act(async () => {
+      deferred.resolve({ trText: "Complete translation" });
+      await deferred.promise;
+    });
+    expect(resultText()).toBe("Complete translation");
+  });
 
   test.each([
     ["selection", {}, false],
@@ -165,7 +202,7 @@ describe("Explicit translation submissions", () => {
     }
   );
 
-  test.each(["button", "Ctrl+Enter", "Cmd+Enter"])(
+  test.each(["button", "Enter", "Ctrl+Enter", "Cmd+Enter"])(
     "retries a failed request for unchanged text with %s",
     async (action) => {
       apiTranslate.mockRejectedValueOnce(new Error("Temporary network error"));
@@ -173,11 +210,14 @@ describe("Explicit translation submissions", () => {
       expect(container.textContent).toContain("Temporary network error");
       expect(apiTranslate).toHaveBeenCalledTimes(1);
       const firstRequest = apiTranslate.mock.calls[0][0];
+      act(() => input().focus());
+      const button = submitButton();
+      expect(button).not.toBeNull();
+      expect(button.disabled).toBe(false);
+      expect(button.getAttribute("aria-label")).toBe("submit");
 
       if (action === "button") {
-        expect(submitButton().disabled).toBe(false);
-        expect(submitButton().getAttribute("aria-label")).toBe("translate");
-        act(() => submitButton().click());
+        act(() => button.click());
       } else {
         pressEnter({
           ctrlKey: action === "Ctrl+Enter",
@@ -207,7 +247,7 @@ describe("Explicit translation submissions", () => {
     expect(input().value).toBe(`  ${longText}  `);
     expect(apiTranslate).toHaveBeenCalledTimes(1);
 
-    act(() => submitButton().click());
+    clickSubmit();
     await flushEffects();
 
     expect(apiTranslate).toHaveBeenCalledTimes(2);
@@ -235,7 +275,7 @@ describe("Explicit translation submissions", () => {
     expect(apiTranslate).toHaveBeenCalledTimes(2);
     apiTranslate.mockResolvedValue({ trText: "Recovered translation" });
 
-    act(() => submitButton().click());
+    clickSubmit();
     await flushEffects();
 
     expect(
@@ -261,7 +301,7 @@ describe("Explicit translation submissions", () => {
     });
     const pendingRequest = apiTranslate.mock.calls[1][0];
 
-    act(() => submitButton().click());
+    clickSubmit();
     await flushEffects();
 
     expect(
@@ -287,13 +327,13 @@ describe("Explicit translation submissions", () => {
     const firstRequest = apiTranslate.mock.calls[0][0];
     act(() => firstRequest.onStreamChunk({ text: "First partial result" }));
 
-    act(() => submitButton().click());
+    clickSubmit();
     await flushEffects();
     expect(apiTranslate).toHaveBeenCalledTimes(1);
     expect(firstRequest.signal.aborted).toBe(false);
 
     updateDraft("Changed source text");
-    act(() => submitButton().click());
+    clickSubmit();
     await flushEffects();
     expect(apiTranslate).toHaveBeenCalledTimes(2);
     const retryRequest = apiTranslate.mock.calls[1][0];
@@ -329,7 +369,7 @@ describe("Explicit translation submissions", () => {
     expect(request.signal.aborted).toBe(false);
   });
 
-  test("keeps focus and the next draft after a keyboard submission", async () => {
+  test("plain Enter submits, exits editing, and a later focus starts the next draft", async () => {
     apiTranslate.mockImplementation(() => new Promise(() => {}));
     await renderPanel();
     updateDraft("Submitted by keyboard");
@@ -342,18 +382,11 @@ describe("Explicit translation submissions", () => {
     const request = apiTranslate.mock.calls[1][0];
     expect(request.text).toBe("Submitted by keyboard");
     expect(input()).toBe(sourceInput);
-    expect(document.activeElement).toBe(sourceInput);
+    expect(document.activeElement).not.toBe(sourceInput);
+    expect(container.querySelector('button[title="submit"]')).toBeNull();
 
     const nextDraft = "  Unsubmitted continuation  ";
-    act(() => {
-      // Continue typing without another focus event after the shortcut.
-      const setValue = Object.getOwnPropertyDescriptor(
-        HTMLTextAreaElement.prototype,
-        "value"
-      ).set;
-      setValue.call(sourceInput, nextDraft);
-      sourceInput.dispatchEvent(new Event("input", { bubbles: true }));
-    });
+    updateDraft(nextDraft);
     await renderPanel({ marker: "presentation update after submission" });
 
     expect(document.activeElement).toBe(sourceInput);
@@ -455,5 +488,35 @@ describe("Explicit translation submissions", () => {
         delete document.fullscreenElement;
       }
     }
+  });
+
+  test("increments the AI dictionary revision on every explicit submission", async () => {
+    await renderPanel({
+      transApis: [
+        {
+          apiSlug: "openai",
+          apiName: "OpenAI",
+          apiType: "OpenAI",
+          useStream: true,
+          streamRenderMode: "realtime",
+          dictPrompt: "Dictionary prompt",
+        },
+      ],
+      aiDictApiSlug: "openai",
+    });
+
+    const revisionsBefore = AiDictCont.mock.calls.map(
+      ([props]) => props.requestRevision
+    );
+    expect(revisionsBefore).not.toHaveLength(0);
+    expect(new Set(revisionsBefore)).toEqual(new Set([0]));
+
+    clickSubmit();
+    await flushEffects();
+
+    const revisionsAfter = AiDictCont.mock.calls.map(
+      ([props]) => props.requestRevision
+    );
+    expect(revisionsAfter.at(-1)).toBe(1);
   });
 });

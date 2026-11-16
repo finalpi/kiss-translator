@@ -12,6 +12,7 @@ OUT = ROOT / "build" / "amo"
 FILES = [
     "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".pnpm-version",
     ".env", ".babelrc", "config-overrides.js", "LICENSE", "README-AMO.md",
+    "tsconfig.json", "vite.config.local-ai.ts",
     "docs/firefox-privacy.md", "docs/firefox-reviewer-notes.md",
     "docs/firefox-release.md",
 ]
@@ -34,6 +35,16 @@ def main():
     source_manifest = json.loads(
         (ROOT / "public/manifest.firefox.json").read_text(encoding="utf-8")
     )
+    # The build adds the file-translation bridge using the bundled site list.
+    import os
+    from urllib.parse import urlsplit
+    sites = [os.environ["REACT_APP_FILE_TRANSLATE_URL"]] if os.environ.get("REACT_APP_FILE_TRANSLATE_URL") else json.loads((ROOT / "src/config/fileTranslationSites.json").read_text(encoding="utf-8"))
+    matches = []
+    for site in sites:
+        parsed = urlsplit(site)
+        matches.append(f"{parsed.scheme}://{parsed.netloc}{parsed.path}*")
+    matches += ["http://localhost/file-translate.html*", "http://127.0.0.1/file-translate.html*"]
+    source_manifest["content_scripts"].append({"js": ["file-bridge.js"], "matches": matches, "all_frames": False, "run_at": "document_start"})
     if manifest != source_manifest:
         raise RuntimeError("Built manifest differs from source; rebuild first")
     version = manifest["version"]

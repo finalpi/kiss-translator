@@ -2,7 +2,7 @@
   "manifest_version": 2,
   "name": "KISS Translator (finalpi)",
   "description": "__MSG_app_description__",
-  "version": "2.1.9",
+  "version": "2.2.6",
   "default_locale": "en",
   "browser_specific_settings": {
     "gecko": {
@@ -27,10 +27,9 @@
   "author": "finalpi <finalpi@outlook.com>",
   "homepage_url": "https://github.com/finalpi/kiss-translator",
   "background": {
-    "scripts": [
-      "background.js"
-    ]
+    "page": "local-ai-background.html"
   },
+  "content_security_policy": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
   "content_scripts": [
     {
       "js": [
@@ -79,6 +78,9 @@
     },
     "toggleStyle": {
       "description": "__MSG_toggle_style__"
+    },
+    "imageScreenshot": {
+      "description": "__MSG_image_screenshot_command__"
     },
     "openOptions": {
       "description": "__MSG_open_options__"

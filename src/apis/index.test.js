@@ -1,3 +1,4 @@
+import { resolveSummaryPrompt } from "../config";
 jest.mock("query-string", () => ({
   stringify: (obj) => new URLSearchParams(obj).toString(),
 }));
@@ -47,6 +48,8 @@ const mockSha256 = jest.fn();
 const mockGetCacheDigest = jest.fn();
 
 jest.mock("../libs/utils", () => ({
+  parseAITerms: (...args) =>
+    jest.requireActual("../libs/utils").parseAITerms(...args),
   sha256: (...args) => mockSha256(...args),
   withTimeout: jest.fn((promise) => promise),
 }));
@@ -75,12 +78,25 @@ jest.mock("./trans", () => ({
   handleSummarize: jest.fn(),
 }));
 
-import { apiDict, apiSubtitle, apiTranslate } from "./index";
-import { handleDict, handleSubtitle, handleTranslate } from "./trans";
+import {
+  apiDict,
+  apiSubtitle,
+  apiTranslate,
+  apiSummarizeVideo,
+  getVideoSummarySignature,
+  apiSummarizeContext,
+} from "./index";
+import {
+  handleDict,
+  handleSubtitle,
+  handleTranslate,
+  handleSummarize,
+} from "./trans";
 import { fetchData, fnPolyfill } from "../libs/fetch";
 import { getSetting } from "../libs/storage";
 import { withTimeout } from "../libs/utils";
 import { getBatchQueue } from "../libs/batchQueue";
+import { withBuiltinProvider } from "../builtin-plugins";
 import { getFetchPool } from "../libs/pool";
 import { getHttpCachePolyfill, putHttpCachePolyfill } from "../libs/cache";
 import {
@@ -91,6 +107,9 @@ import {
   OPT_TRANS_DEEPLX,
   OPT_TRANS_OPENAI,
   OPT_TRANS_QWENMT,
+  defaultContextSummaryPrompt,
+  DEFAULT_SUMMARY_PROMPT,
+  resolveEmptyApiPrompts,
 } from "../config";
 
 const getOpenAiApiSetting = (systemPrompt) => ({
@@ -109,6 +128,213 @@ const getBuiltinAiApiSetting = (httpTimeout) => ({
   fetchInterval: 100,
   fetchLimit: 1,
   httpTimeout,
+});
+
+test("text refresh replaces the default cache entry while off skips both reads and writes", async () => {
+  jest.clearAllMocks();
+  getFetchPool.mockReturnValue({ push: (fn, args) => fn(args) });
+  withTimeout.mockImplementation((promise) => promise);
+  mockGetCacheDigest.mockResolvedValue("a".repeat(64));
+  const args = {
+    text: "cache text",
+    fromLang: "en",
+    toLang: "zh-CN",
+    apiSetting: getBuiltinAiApiSetting(30),
+  };
+  getHttpCachePolyfill.mockResolvedValue({ trText: "old" });
+  expect((await apiTranslate(args)).trText).toBe("old");
+  const key = getHttpCachePolyfill.mock.calls.at(-1)[0];
+  fnPolyfill.mockResolvedValue(["new", "en", ""]);
+  getHttpCachePolyfill.mockClear();
+  expect((await apiTranslate({ ...args, cacheMode: "refresh" })).trText).toBe(
+    "new"
+  );
+  expect(getHttpCachePolyfill).not.toHaveBeenCalled();
+  expect(putHttpCachePolyfill).toHaveBeenCalledWith(
+    key,
+    null,
+    expect.objectContaining({ trText: "new" })
+  );
+  putHttpCachePolyfill.mockClear();
+  await apiTranslate({ ...args, cacheMode: "off" });
+  expect(getHttpCachePolyfill).not.toHaveBeenCalled();
+  expect(putHttpCachePolyfill).not.toHaveBeenCalled();
+  getHttpCachePolyfill.mockReset();
+});
+
+describe("refresh translation prompt and cache isolation", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    getHttpCachePolyfill.mockResolvedValue(null);
+    mockGetCacheDigest.mockImplementation(async (text, salt) =>
+      require("crypto")
+        .createHash("sha256")
+        .update(`${salt}:${text}`)
+        .digest("hex")
+    );
+    handleTranslate.mockImplementation(async function* () {
+      yield { id: 0, result: "single result" };
+    });
+    getBatchQueue.mockImplementation(() => ({
+      addTask: jest.fn().mockResolvedValue(["batch result", ""]),
+    }));
+  });
+
+  test.each([false, true])(
+    "refresh uses the single template and cache (plugin=%s)",
+    async (plugin) => {
+      const apiSetting = {
+        ...getOpenAiApiSetting("Batch rules"),
+        batchUserPrompt: "Batch {{segments}}",
+        batchProtocol: "json",
+        outputProtocol: "json",
+        nobatchPrompt: "Single rules",
+        nobatchUserPrompt: "Single {{text}}",
+        ...(plugin && {
+          apiType: "Plugin",
+          provider: {
+            apiVersion: 1,
+            implementation: { kind: "script" },
+            capabilities: {
+              translate: { outputModes: ["text"], batch: { supported: true } },
+            },
+          },
+        }),
+      };
+      const stored = JSON.stringify(apiSetting);
+      const args = {
+        text: "source",
+        fromLang: "en",
+        toLang: "zh-CN",
+        apiSetting,
+      };
+      await apiTranslate(args);
+      const batchKey = putHttpCachePolyfill.mock.calls.at(-1)[0];
+      await apiTranslate({ ...args, cacheMode: "refresh" });
+      const refreshKey = putHttpCachePolyfill.mock.calls.at(-1)[0];
+      expect(refreshKey).not.toBe(batchKey);
+      expect(handleTranslate.mock.calls.at(-1)[1].apiSetting).toMatchObject({
+        useBatchFetch: false,
+        nobatchPrompt: "Single rules",
+        nobatchUserPrompt: "Single {{text}}",
+        ...(plugin && { outputProtocol: "text" }),
+      });
+      await apiTranslate({
+        ...args,
+        apiSetting: { ...apiSetting, useBatchFetch: false },
+      });
+      expect(putHttpCachePolyfill.mock.calls.at(-1)[0]).toBe(refreshKey);
+
+      const blank = {
+        ...apiSetting,
+        nobatchPrompt: null,
+        nobatchUserPrompt: " \t",
+      };
+      await apiTranslate({ ...args, apiSetting: blank, cacheMode: "refresh" });
+      const blankKey = putHttpCachePolyfill.mock.calls.at(-1)[0];
+      const resolved = resolveEmptyApiPrompts(
+        { ...blank, useBatchFetch: false },
+        "translate"
+      );
+      expect(handleTranslate.mock.calls.at(-1)[1].apiSetting).toMatchObject({
+        nobatchPrompt: resolved.nobatchPrompt,
+        nobatchUserPrompt: resolved.nobatchUserPrompt,
+      });
+      expect(resolved.nobatchUserPrompt).toContain("{{text}}");
+      await apiTranslate({ ...args, apiSetting: resolved });
+      expect(putHttpCachePolyfill.mock.calls.at(-1)[0]).toBe(blankKey);
+      expect(JSON.stringify(apiSetting)).toBe(stored);
+    }
+  );
+});
+
+describe("selection context cache and batch isolation", () => {
+  let addTask;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    getHttpCachePolyfill.mockResolvedValue(null);
+    mockGetCacheDigest.mockImplementation(async (text, salt) =>
+      require("crypto")
+        .createHash("sha256")
+        .update(`${salt}:${text}`)
+        .digest("hex")
+    );
+    handleTranslate.mockImplementation(async function* () {
+      yield { id: 0, result: "single result" };
+    });
+    addTask = jest.fn().mockResolvedValue(["batch result", ""]);
+    getBatchQueue.mockImplementation(() => ({ addTask }));
+  });
+
+  test.each([
+    ["native", false],
+    ["native", true],
+    ["external", false],
+    ["external", true],
+  ])(
+    "isolates no-context and distinct-context requests (%s provider, batch=%s)",
+    async (providerKind, useBatchFetch) => {
+      const baseSetting = {
+        ...getOpenAiApiSetting(""),
+        useBatchFetch,
+        useStream: false,
+        nobatchUserPrompt: "Translate {{text}}\n{{context}}",
+        batchUserPrompt: "Translate {{segments}}\n{{context}}",
+        batchProtocol: "line",
+      };
+      const apiSetting =
+        providerKind === "native"
+          ? withBuiltinProvider(baseSetting)
+          : {
+              ...baseSetting,
+              apiType: "Plugin",
+              provider: {
+                apiVersion: 1,
+                implementation: { kind: "script" },
+                capabilities: {
+                  translate: {
+                    outputModes: ["text"],
+                    batch: { supported: true },
+                  },
+                },
+              },
+            };
+      const args = {
+        text: "scale",
+        fromLang: "en",
+        toLang: "zh-CN",
+        apiSetting,
+      };
+      const contextA = "The company plans to scale its operations.";
+      const contextB = "The scale of the map is one to one hundred.";
+
+      await apiTranslate(args);
+      await apiTranslate({ ...args, docInfo: { context: contextA } });
+      await apiTranslate({ ...args, docInfo: { context: contextA } });
+      await apiTranslate({ ...args, docInfo: { context: contextB } });
+
+      const cacheKeys = getHttpCachePolyfill.mock.calls.map(([key]) => key);
+      expect(new Set(cacheKeys).size).toBe(3);
+      expect(cacheKeys[1]).toBe(cacheKeys[2]);
+      expect(cacheKeys[0]).not.toBe(cacheKeys[1]);
+      expect(cacheKeys[1]).not.toBe(cacheKeys[3]);
+
+      if (useBatchFetch) {
+        const queueKeys = getBatchQueue.mock.calls.map(([key]) => key);
+        expect(new Set(queueKeys).size).toBe(3);
+        expect(queueKeys[1]).toBe(queueKeys[2]);
+        expect(
+          addTask.mock.calls.map(([, task]) => task.docInfo?.context)
+        ).toEqual([undefined, contextA, contextA, contextB]);
+      } else {
+        expect(getBatchQueue).not.toHaveBeenCalled();
+        expect(
+          handleTranslate.mock.calls.map(([, task]) => task.docInfo?.context)
+        ).toEqual([undefined, contextA, contextA, contextB]);
+      }
+    }
+  );
 });
 
 describe("apiSubtitle cache identity", () => {
@@ -153,7 +379,7 @@ describe("apiSubtitle cache identity", () => {
     );
     expect(mockGetCacheDigest).toHaveBeenCalledWith(
       expect.stringContaining("Summary A"),
-      "prompt-cache"
+      "prompt-cache-default-pair-v5"
     );
   });
 
@@ -238,6 +464,43 @@ describe("apiTranslate BuiltinAI timeout", () => {
 
   afterEach(() => {
     jest.clearAllMocks();
+  });
+
+  test.each(["text", "html"])(
+    "forwards original text and %s format to BuiltinAI",
+    async (textFormat) => {
+      fnPolyfill.mockResolvedValueOnce(["Translated", "en", ""]);
+      await apiTranslate({
+        text: "First\n\nSecond",
+        fromLang: "en",
+        toLang: "zh-CN",
+        apiSetting: getBuiltinAiApiSetting(30),
+        textFormat,
+        useCache: false,
+      });
+      expect(fnPolyfill).toHaveBeenCalledTimes(1);
+      expect(fnPolyfill).toHaveBeenCalledWith(
+        expect.objectContaining({ text: "First\n\nSecond", textFormat })
+      );
+    }
+  );
+
+  test("versions only multiline translation cache keys", async () => {
+    getHttpCachePolyfill.mockResolvedValue(null);
+    fnPolyfill.mockResolvedValue(["Translated", "en", ""]);
+    getHttpCachePolyfill.mockClear();
+    const args = {
+      fromLang: "en",
+      toLang: "zh-CN",
+      apiSetting: getBuiltinAiApiSetting(30),
+    };
+    await apiTranslate({ ...args, text: "First\n\nSecond" });
+    await apiTranslate({ ...args, text: "Single line" });
+    const [multiline, single] = getHttpCachePolyfill.mock.calls.map(
+      ([key]) => new URL(key)
+    );
+    expect(multiline.searchParams.get("newlinePolicy")).toBe("raw-lf-v1");
+    expect(single.searchParams.has("newlinePolicy")).toBe(false);
   });
 
   test("converts second-based timeout before calling withTimeout", async () => {
@@ -430,7 +693,7 @@ describe("apiDict", () => {
     );
     expect(mockGetCacheDigest).toHaveBeenCalledWith(
       expect.stringContaining("The library is open."),
-      "prompt-cache"
+      "prompt-cache-default-pair-v5"
     );
     expect(getBatchQueue).not.toHaveBeenCalled();
   });
@@ -539,6 +802,57 @@ describe("apiTranslate prompt queue isolation", () => {
     expect(queueKeys[0]).not.toBe(queueKeys[1]);
   });
 
+  test.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    "only signs used optional parameters (referenced=%s, native provider=%s)",
+    async (referenced, provider) => {
+      mockGetCacheDigest.mockClear();
+      const apiSetting = {
+        ...getOpenAiApiSetting(
+          referenced ? "Style {{tone}}; terms {{glossary}}" : "Translate"
+        ),
+        batchUserPrompt: "{{segments}}",
+      };
+      for (const value of ["first", "second"]) {
+        const setting = {
+          ...apiSetting,
+          tone: value,
+          aiTerms: `API,${value}`,
+          terminologySignature: value,
+        };
+        await apiTranslate({
+          text: "hello",
+          fromLang: "en",
+          toLang: "zh-CN",
+          glossary: { term: value },
+          apiSetting: provider ? withBuiltinProvider(setting) : setting,
+          useCache: false,
+        });
+      }
+      const signatures = mockGetCacheDigest.mock.calls
+        .filter(([, salt]) => salt === "prompt-cache-default-pair-v5")
+        .map(([text]) => text);
+      expect(signatures).toHaveLength(2);
+      if (referenced) expect(signatures[0]).not.toBe(signatures[1]);
+      else expect(signatures[0]).toBe(signatures[1]);
+      if (provider) {
+        const providerSignatures = mockGetCacheDigest.mock.calls
+          .filter(([, salt]) => salt === "provider-cache-v2")
+          .map(([text]) => text);
+        expect(providerSignatures).toHaveLength(2);
+        if (referenced)
+          expect(providerSignatures[0]).not.toBe(providerSignatures[1]);
+        else expect(providerSignatures[0]).toBe(providerSignatures[1]);
+      }
+      const queueKeys = getBatchQueue.mock.calls.slice(-2).map(([key]) => key);
+      if (!referenced) expect(queueKeys[0]).toBe(queueKeys[1]);
+    }
+  );
+
   test("includes translation style and glossary in the shared prompt signature", async () => {
     const glossary = { React: "React", component: "组件" };
 
@@ -548,7 +862,7 @@ describe("apiTranslate prompt queue isolation", () => {
       toLang: "zh-CN",
       glossary,
       apiSetting: {
-        ...getOpenAiApiSetting("batch prompt A"),
+        ...getOpenAiApiSetting("batch prompt A {{tone}} {{glossary}}"),
         tone: "technical",
         aiTerms: "API,接口",
       },
@@ -558,12 +872,12 @@ describe("apiTranslate prompt queue isolation", () => {
     expect(mockGetCacheDigest).toHaveBeenCalledWith(
       [
         "batch",
-        "batch prompt A",
+        "batch prompt A {{tone}} {{glossary}}",
         "technical",
         "API,接口",
         JSON.stringify(Object.entries(glossary).sort()),
       ].join("\n"),
-      "prompt-cache"
+      "prompt-cache-default-pair-v5"
     );
   });
 
@@ -736,7 +1050,7 @@ describe("apiTranslate QwenMT cache identity", () => {
         "component,组件",
         JSON.stringify(Object.entries(glossary).sort()),
       ].join("\n"),
-      "prompt-cache"
+      "prompt-cache-default-pair-v5"
     );
     expect(getBatchQueue).not.toHaveBeenCalled();
     expect(handleTranslate).toHaveBeenCalledWith(
@@ -1018,5 +1332,352 @@ describe("apiTranslate capture 透传", () => {
     expect(capture.onRequest).toHaveBeenCalledTimes(1);
     expect(capture.onResponse).toHaveBeenCalledTimes(1);
     expect(capture.onResponse.mock.calls[0][0]).toBe(rawResponse);
+  });
+});
+
+describe("apiSummarizeVideo and getVideoSummarySignature cache identity", () => {
+  beforeEach(() => {
+    mockGetCacheDigest.mockReset();
+    mockGetCacheDigest.mockImplementation(async (text, salt = "") => {
+      let hash = 0;
+      const combined = `${text}#${salt}`;
+      for (let i = 0; i < combined.length; i++) {
+        hash = (hash * 31 + combined.charCodeAt(i)) >>> 0;
+      }
+      return hash.toString(16).padStart(16, "0").repeat(4);
+    });
+    handleSummarize.mockReset();
+    getHttpCachePolyfill.mockReset();
+    putHttpCachePolyfill.mockReset();
+  });
+
+  test.each([false, true])(
+    "empty prompt representations share an identity and old rendering versions do not (provider=%s)",
+    async (provider) => {
+      const args = {
+        videoId: "empty",
+        transcript: "Transcript",
+        apiSetting: {
+          apiSlug: "summary",
+          ...(provider && {
+            provider: {
+              implementation: { kind: "native" },
+              capabilities: { summarize: { handler: "summarize" } },
+            },
+          }),
+        },
+      };
+      const signatures = await Promise.all(
+        [
+          undefined,
+          null,
+          {},
+          { systemPrompt: "", userPrompt: "" },
+          { systemPrompt: " ", userPrompt: "\t" },
+          resolveSummaryPrompt(args.apiSetting),
+        ].map((prompt) => getVideoSummarySignature({ ...args, prompt }))
+      );
+      expect(new Set(signatures).size).toBe(1);
+      expect(mockGetCacheDigest.mock.calls[0][0]).toContain(
+        "prompt-cache-default-pair-v5"
+      );
+      expect(
+        await getVideoSummarySignature({
+          ...args,
+          prompt: { userPrompt: "{{transcript}}" },
+        })
+      ).not.toBe(signatures[0]);
+    }
+  );
+  test("automatic context summary explicitly selects its paired default templates", async () => {
+    handleSummarize.mockResolvedValueOnce("Summary");
+    getHttpCachePolyfill.mockResolvedValueOnce(undefined);
+    await apiSummarizeContext({
+      videoId: "auto",
+      title: "Title",
+      description: "Description",
+      transcript: "Transcript",
+      apiSetting: { apiType: "OpenAI", apiSlug: "summary" },
+    });
+    expect(handleSummarize).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        prompt: defaultContextSummaryPrompt,
+      })
+    );
+  });
+  test("video summary blank templates select the video default before hashing and execution", async () => {
+    handleSummarize.mockResolvedValueOnce("Summary");
+    getHttpCachePolyfill.mockResolvedValueOnce(undefined);
+    await apiSummarizeVideo({
+      videoId: "video-default",
+      transcript: "Transcript",
+      apiSetting: { apiType: "OpenAI", apiSlug: "summary" },
+      prompt: { systemPrompt: " ", userPrompt: null },
+    });
+    expect(handleSummarize.mock.calls.at(-1)[0].prompt).toMatchObject({
+      systemPrompt: DEFAULT_SUMMARY_PROMPT.systemPrompt,
+      userPrompt: DEFAULT_SUMMARY_PROMPT.userPrompt,
+    });
+  });
+  test("getVideoSummarySignature differentiates transcript, title, prompt, and language changes", async () => {
+    const baseParams = {
+      videoId: "vid_123",
+      title: "Video Title",
+      description: "Video Description",
+      transcript: "This is the transcript content",
+      apiSetting: { apiSlug: "openai_chat" },
+      prompt: {
+        slug: "summary_default",
+        systemPrompt: "System instruction {{to}}",
+        userPrompt: "Summarize: {{transcript}}",
+      },
+      to: "zh-CN",
+    };
+
+    const baseSig = await getVideoSummarySignature(baseParams);
+    const sameSig = await getVideoSummarySignature({ ...baseParams });
+    expect(sameSig).toBe(baseSig);
+
+    // 修改字幕内容（如流式字幕补全）
+    const changedTranscriptSig = await getVideoSummarySignature({
+      ...baseParams,
+      transcript: "This is the transcript content with more appended lines",
+    });
+    expect(changedTranscriptSig).not.toBe(baseSig);
+
+    // 修改标题
+    const changedTitleSig = await getVideoSummarySignature({
+      ...baseParams,
+      title: "Updated Title",
+    });
+    expect(changedTitleSig).not.toBe(baseSig);
+
+    // 修改简介
+    const changedDescSig = await getVideoSummarySignature({
+      ...baseParams,
+      description: "Updated Description",
+    });
+    expect(changedDescSig).not.toBe(baseSig);
+
+    // 修改同一 slug 下的 userPrompt 自定义模板
+    const changedUserPromptSig = await getVideoSummarySignature({
+      ...baseParams,
+      prompt: {
+        ...baseParams.prompt,
+        userPrompt: "Generate bullet points: {{transcript}}",
+      },
+    });
+    expect(changedUserPromptSig).not.toBe(baseSig);
+
+    // 修改同一 slug 下的 systemPrompt
+    const changedSysPromptSig = await getVideoSummarySignature({
+      ...baseParams,
+      prompt: {
+        ...baseParams.prompt,
+        systemPrompt: "You are an expert summarizer in {{to}}",
+      },
+    });
+    expect(changedSysPromptSig).not.toBe(baseSig);
+
+    // 切换目标语言
+    const changedLangSig = await getVideoSummarySignature({
+      ...baseParams,
+      to: "ja",
+    });
+    expect(changedLangSig).not.toBe(baseSig);
+  });
+
+  test("先生成、再修改输入 回归测试：修改字幕、提示词或语言后能够穿透旧缓存", async () => {
+    const cacheMap = new Map();
+    getHttpCachePolyfill.mockImplementation(async (key) => cacheMap.get(key));
+    putHttpCachePolyfill.mockImplementation(async (key, _meta, val) =>
+      cacheMap.set(key, val)
+    );
+
+    handleSummarize.mockImplementation(
+      async ({ transcript, to }) => `Summary for [${transcript}] in ${to}`
+    );
+
+    const baseParams = {
+      videoId: "vid_test",
+      title: "Test Title",
+      description: "Test Desc",
+      transcript: "Initial subtitles",
+      apiSetting: { apiSlug: "openai", apiType: "OpenAI" },
+      prompt: {
+        slug: "default_slug",
+        systemPrompt: "System",
+        userPrompt: "User: {{transcript}}",
+      },
+      to: "zh-CN",
+    };
+
+    // 1. 首次生成
+    const res1 = await apiSummarizeVideo(baseParams);
+    expect(res1).toBe("Summary for [Initial subtitles] in zh-CN");
+    expect(handleSummarize).toHaveBeenCalledTimes(1);
+
+    // 2. 相同输入再次打开总结，命中持久缓存
+    const res2 = await apiSummarizeVideo(baseParams);
+    expect(res2).toBe("Summary for [Initial subtitles] in zh-CN");
+    expect(handleSummarize).toHaveBeenCalledTimes(1);
+
+    // 3. 字幕补全更新后再次请求，缓存失效并重新生成
+    const res3 = await apiSummarizeVideo({
+      ...baseParams,
+      transcript: "Initial subtitles + completed subtitles",
+    });
+    expect(res3).toBe(
+      "Summary for [Initial subtitles + completed subtitles] in zh-CN"
+    );
+    expect(handleSummarize).toHaveBeenCalledTimes(2);
+
+    // 4. 修改同一 slug 的提示词模板后再次请求，缓存失效并重新生成
+    const res4 = await apiSummarizeVideo({
+      ...baseParams,
+      prompt: {
+        ...baseParams.prompt,
+        userPrompt: "Custom prompt: {{transcript}}",
+      },
+    });
+    expect(handleSummarize).toHaveBeenCalledTimes(3);
+
+    // 5. 切换目标语言后再次请求，缓存失效并重新生成
+    const res5 = await apiSummarizeVideo({
+      ...baseParams,
+      to: "en",
+    });
+    expect(res5).toBe("Summary for [Initial subtitles] in en");
+    expect(handleSummarize).toHaveBeenCalledTimes(4);
+
+    // 6. force: true 强制重新生成，即使用户输入未变也绕过缓存
+    const res6 = await apiSummarizeVideo({
+      ...baseParams,
+      force: true,
+    });
+    expect(res6).toBe("Summary for [Initial subtitles] in zh-CN");
+    expect(handleSummarize).toHaveBeenCalledTimes(5);
+  });
+});
+
+describe("terminology at translation boundaries", () => {
+  const table = {
+    id: "topic",
+    name: "Topic",
+    description: "",
+    terms: "act,行动",
+    aiTerms: "component,部件",
+    normalMatchMode: "auto",
+  };
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGetCacheDigest.mockResolvedValue("a".repeat(64));
+    getHttpCachePolyfill.mockResolvedValue(null);
+  });
+  test.each(["original", "lowercase", "whitespace"])(
+    "protects normal words and restores %s provider tokens in final stream output",
+    async (variation) => {
+      const chunks = jest.fn();
+      handleTranslate.mockImplementation(async function* (texts, options) {
+        expect(texts[0]).toContain("__KISS_TERM_0__");
+        expect(texts[0]).toContain("react");
+        expect(options.glossary).toEqual({ component: "场景", API: "接口" });
+        expect(options.apiSetting.aiTerms).toBe("");
+        const result =
+          variation === "lowercase"
+            ? texts[0].replace(/KISS_TERM/g, "kiss_term")
+            : variation === "whitespace"
+              ? texts[0].replace(/(__KISS_TERM_)(\d+)__/g, "$1 $2 __")
+              : texts[0];
+        yield { id: 0, result };
+      });
+      const response = await apiTranslate({
+        text: "act react",
+        toLang: "zh-CN",
+        fromLang: "en",
+        useCache: false,
+        scene: { termsList: ["topic"], aiTerms: "component,场景" },
+        terminologyTables: [table],
+        apiSetting: {
+          ...getOpenAiApiSetting(""),
+          useBatchFetch: false,
+          aiTerms: "component,接口\nAPI,接口",
+        },
+        onStreamChunk: chunks,
+      });
+      expect(response.trText).toBe("行动 react");
+      expect(chunks).toHaveBeenLastCalledWith({
+        id: 0,
+        text: "行动 react",
+        isComplete: true,
+      });
+    }
+  );
+  test.each([
+    ["service-a", "接口A"],
+    ["service-b", "接口B"],
+  ])(
+    "composes the temporary scene with %s independently",
+    async (apiSlug, target) => {
+      handleTranslate.mockImplementation(async function* (texts, options) {
+        expect(options.glossary).toEqual({
+          component: "本次组件",
+          API: target,
+          TableOnly: "表术语",
+        });
+        yield { id: 0, result: texts[0] };
+      });
+      const response = await apiTranslate({
+        text: "act react API",
+        fromLang: "en",
+        toLang: "zh-CN",
+        useCache: false,
+        scene: { termsList: ["topic"], aiTerms: "component,本次组件" },
+        terminologyTables: [
+          table,
+          {
+            ...table,
+            id: "api-table",
+            terms: "",
+            aiTerms: "API,较低优先级\nTableOnly,表术语",
+          },
+        ],
+        apiSetting: {
+          ...getOpenAiApiSetting(""),
+          apiSlug,
+          useBatchFetch: false,
+          termsList: ["api-table"],
+          terms: "act,较低优先级",
+          aiTerms: `component,接口组件\nAPI,${target}`,
+        },
+      });
+      expect(response.trText).toBe("行动 react API");
+    }
+  );
+  test("normal terms do not alter segmentation source or timestamps", async () => {
+    const events = [{ start: 1, end: 2, text: "act" }];
+    handleSubtitle.mockResolvedValue([
+      { start: 1, end: 2, text: "act", translation: "wrong" },
+    ]);
+    const result = await apiSubtitle({
+      videoId: "v",
+      chunkSign: "c",
+      events,
+      toLang: "zh-CN",
+      scene: { termsList: ["topic"] },
+      terminologyTables: [table],
+      apiSetting: getOpenAiApiSetting(""),
+    });
+    expect(handleSubtitle.mock.calls.at(-1)[0].events).toEqual(events);
+    expect(result).toEqual([
+      {
+        start: 1,
+        end: 2,
+        text: "act",
+        translation: "",
+        _isDraftTranslation: true,
+      },
+    ]);
+    expect(events).toEqual([{ start: 1, end: 2, text: "act" }]);
   });
 });

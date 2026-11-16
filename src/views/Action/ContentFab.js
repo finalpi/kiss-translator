@@ -5,6 +5,15 @@ import SelectAllRoundedIcon from "@mui/icons-material/SelectAllRounded";
 import SettingsRoundedIcon from "@mui/icons-material/SettingsRounded";
 import TranslateRoundedIcon from "@mui/icons-material/TranslateRounded";
 import TuneRoundedIcon from "@mui/icons-material/TuneRounded";
+import VisibilityRoundedIcon from "@mui/icons-material/VisibilityRounded";
+import VisibilityOffRoundedIcon from "@mui/icons-material/VisibilityOffRounded";
+import CropRoundedIcon from "@mui/icons-material/CropRounded";
+import Button from "@mui/material/Button";
+import Dialog from "@mui/material/Dialog";
+import DialogActions from "@mui/material/DialogActions";
+import DialogContent from "@mui/material/DialogContent";
+import DialogContentText from "@mui/material/DialogContentText";
+import DialogTitle from "@mui/material/DialogTitle";
 import ListItemIcon from "@mui/material/ListItemIcon";
 import ListItemText from "@mui/material/ListItemText";
 import MenuItem from "@mui/material/MenuItem";
@@ -30,15 +39,23 @@ import {
   MSG_TRANS_TOGGLE,
   MSG_TRANS_TOGGLE_STYLE,
   MSG_TRANSBOX_TOGGLE,
+  MSG_IMAGE_SCREENSHOT,
 } from "../../config";
 import { useI18n } from "../../hooks/I18n";
+import { useFab } from "../../hooks/Fab";
 import { isExt } from "../../libs/client";
 import { sendBgMsg } from "../../libs/msg";
 import { createMenuKeyDownHandler } from "../../libs/menuFocus";
+import { isFabHiddenOnPage } from "../../libs/fabVisibility";
 import useWindowSize from "../../hooks/WindowSize";
 import { useFullscreenDetect } from "../../hooks/useFullscreenDetect";
 import { ACTION_STYLES } from "./styles";
-import { normalizeFabAppearance } from "../../config/fab";
+import {
+  FAB_CLICK_ACTION_MENU,
+  FAB_CLICK_ACTION_TRANSLATE,
+  FAB_CLICK_ACTION_POPUP,
+  normalizeFabAppearance,
+} from "../../config/fab";
 import FloatingButton from "../../components/FloatingButton";
 
 const selectionUnavailable = () => false;
@@ -83,13 +100,17 @@ export function ContentFabContent({
   fabConfig = {},
   processActions,
   getSelectionEnabled = selectionUnavailable,
+  onClose,
+  onVisibilityChange,
 }) {
   const i18n = useI18n();
+  const { fab, updateFab } = useFab();
+  const hideOnPage = isFabHiddenOnPage(fab, window.location.href);
   const {
     x: fabX,
     y: fabY,
     edge: fabEdge,
-    fabClickAction = 0,
+    fabClickAction = FAB_CLICK_ACTION_MENU,
   } = fabConfig || {};
   const {
     halfHide,
@@ -101,12 +122,16 @@ export function ContentFabContent({
     subscribeSelectionEnabled,
     getSelectionEnabled
   );
-  const opensMenu = fabClickAction !== 1;
+  const opensPopup = fabClickAction === FAB_CLICK_ACTION_POPUP;
+  const opensMenu =
+    fabClickAction !== FAB_CLICK_ACTION_TRANSLATE && !opensPopup;
   const windowSize = useWindowSize();
   const [moved, setMoved] = useState(false); // Track whether a drag occurred.
   const [showFab, setShowFab] = useState(true);
   const [touchOpen, setTouchOpen] = useState(false);
   const [open, setOpen] = useState(false); // Action menu visibility.
+  const [savingVisibility, setSavingVisibility] = useState(false);
+  const [notice, setNotice] = useState("");
   const anchorRef = useRef(null);
   const menuRef = useRef(null);
   const popperRef = useRef(null);
@@ -137,6 +162,10 @@ export function ContentFabContent({
   }, []);
 
   useEffect(() => {
+    if (!opensMenu) closeMenu();
+  }, [closeMenu, opensMenu]);
+
+  useEffect(() => {
     if (!opensMenu || !open) return;
 
     const ownerDocument = anchorRef.current.ownerDocument;
@@ -145,10 +174,15 @@ export function ContentFabContent({
     // their composed paths to identify the menu and FAB across shadow roots.
     const handleClickAway = (event) => {
       const path = event.composedPath();
+      const themeRoot = menuRef.current?.closest(".kt-m3-root");
       if (
         path.includes(menuRef.current) ||
         path.includes(anchorRef.current) ||
-        path.some((node) => node.hasAttribute?.("data-kiss-touch-ui"))
+        path.some((node) => node.hasAttribute?.("data-kiss-touch-ui")) ||
+        // Select opens on mousedown; release over its portaled backdrop can
+        // retarget the click to the common theme root.
+        (path[0] === themeRoot &&
+          themeRoot?.querySelector(".MuiMenu-root[data-kiss-touch-ui]"))
       ) {
         return;
       }
@@ -220,20 +254,50 @@ export function ContentFabContent({
     }
   }, [closeMenu]);
 
+  const toggleVisibility = async () => {
+    // Matching exceptions invert this global preference on the current page.
+    const isHide = !fab?.isHide;
+    const nextHideOnPage = !hideOnPage;
+    setSavingVisibility(true);
+    try {
+      await updateFab({ isHide });
+      onVisibilityChange?.(nextHideOnPage);
+      closeMenu();
+      if (nextHideOnPage) {
+        setNotice("fab_hidden_shortcut_hint");
+      }
+    } catch (_error) {
+      setNotice("popup_save_failed");
+    } finally {
+      setSavingVisibility(false);
+    }
+  };
+
+  const closeNotice = () => {
+    setNotice("");
+    // Keep the host visible until its shortcut reminder has been dismissed.
+    if (notice === "fab_hidden_shortcut_hint") onClose?.();
+  };
+
   // Ignore clicks after dragging to prevent accidental activation.
   const handleClick = useCallback(
     (event) => {
       if (moved) {
         return;
       }
-      // fabClickAction === 1 keeps the legacy direct translation action.
+      if (opensPopup) {
+        // Preserve the trigger until PopupManager records its focus return target.
+        setOpen(false);
+        processActions({ action: MSG_POPUP_TOGGLE });
+        return;
+      }
       if (!opensMenu) {
         runAction(MSG_TRANS_TOGGLE, event);
         return;
       }
       setOpen((current) => !current);
     },
-    [moved, opensMenu, runAction]
+    [moved, opensMenu, opensPopup, processActions, runAction]
   );
 
   // Close the menu and return focus to the FAB before menu items unmount.
@@ -278,6 +342,11 @@ export function ContentFabContent({
       disabled: !selectionEnabled,
     },
     {
+      label: i18n("image_screenshot_translate", "截图翻译"),
+      icon: CropRoundedIcon,
+      action: (event) => runAction(MSG_IMAGE_SCREENSHOT, event),
+    },
+    {
       label: i18n("open_menu"),
       icon: TuneRoundedIcon,
       action: (event) => runAction(MSG_POPUP_TOGGLE, event),
@@ -317,9 +386,9 @@ export function ContentFabContent({
           opensMenu={opensMenu}
           open={open}
           aria-expanded={opensMenu ? open : undefined}
-          aria-haspopup={opensMenu ? "menu" : undefined}
+          aria-haspopup={opensMenu ? "menu" : opensPopup ? "dialog" : undefined}
           aria-controls={opensMenu && open ? "kt-content-fab-menu" : undefined}
-          aria-label={i18n("translate")}
+          aria-label={i18n(opensPopup ? "fab_click_popup" : "translate")}
           onClick={handleClick}
         />
       }
@@ -356,12 +425,58 @@ export function ContentFabContent({
                 <ListItemText>{label}</ListItemText>
               </MenuItem>
             ))}
+            <MenuItem
+              className="kt-content-fab-menu__item"
+              role="menuitemcheckbox"
+              aria-checked={!hideOnPage}
+              disabled={savingVisibility}
+              onClick={toggleVisibility}
+            >
+              <ListItemIcon>
+                {hideOnPage ? (
+                  <VisibilityRoundedIcon />
+                ) : (
+                  <VisibilityOffRoundedIcon />
+                )}
+              </ListItemIcon>
+              <ListItemText>
+                {i18n(hideOnPage ? "fab_always_show" : "fab_turn_off")}
+              </ListItemText>
+            </MenuItem>
           </MenuList>
           {touchOpen && (
             <TouchTranslateControl processActions={processActions} />
           )}
         </Paper>
       </Popper>
+      <Dialog
+        open={Boolean(notice)}
+        // Retain shadow-root styles without inheriting the draggable transform.
+        container={() => anchorRef.current?.closest(".kt-m3-root")}
+        disableEnforceFocus
+        disableRestoreFocus
+        disableScrollLock
+        onClose={closeNotice}
+        aria-labelledby="kt-content-fab-notice-title"
+        aria-describedby="kt-content-fab-notice-message"
+        maxWidth="xs"
+        fullWidth
+        sx={{ zIndex: 2147483647 }}
+      >
+        <DialogTitle id="kt-content-fab-notice-title">
+          {i18n("hide_fab_button")}
+        </DialogTitle>
+        <DialogContent>
+          <DialogContentText id="kt-content-fab-notice-message">
+            {i18n(notice)}
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button autoFocus onClick={closeNotice}>
+            {i18n("close")}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Draggable>
   );
 }

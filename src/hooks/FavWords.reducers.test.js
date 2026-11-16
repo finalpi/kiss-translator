@@ -104,6 +104,38 @@ describe("favorite word mutation inputs", () => {
     });
     expect(enrich(enriched)).toBe(enriched);
   });
+  test("stores source metadata for newly collected and imported words", () => {
+    const source = {
+      sentence: "The library is open.",
+      url: "https://example.com/article",
+    };
+
+    favorites.toggleFav("word", null, "", "", [], source);
+    const toggleReduce = mockSave.mock.calls[0][0];
+    expect(toggleReduce({})).toEqual({
+      word: { createdAt: 100, source },
+    });
+
+    favorites.mergeWords(["imported"], { source });
+    const mergeReduce = mockSave.mock.calls[1][0];
+    expect(mergeReduce({})).toEqual({
+      imported: { createdAt: 100, source },
+    });
+  });
+
+  test("keeps word forms and webpage source together after merging upstream", () => {
+    const source = { sentence: "He was looking.", url: "https://example.com" };
+    favorites.toggleFav("look", null, "", "", [], ["looking"], source);
+    expect(mockSave.mock.calls[0][0]({}).look).toMatchObject({
+      forms: ["looking"],
+      source,
+    });
+    favorites.mergeWords(["look"], { look: ["looked"], source });
+    expect(mockSave.mock.calls[1][0]({}).look).toMatchObject({
+      forms: ["looked"],
+      source,
+    });
+  });
 
   test("returns the persistence result for an explicit full clear", () => {
     const pending = Promise.resolve({ value: {}, changed: true });

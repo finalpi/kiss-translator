@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import Layout, {
   fetchLatestVersion,
   isWideOptionsPage,
+  isFullWidthOptionsPage,
   isValidVersion,
   isNewerVersion,
 } from "./Layout";
@@ -11,10 +12,12 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 let mockPathname = "/";
 let mockCheckUpdate = true;
+let mockIsGm = false;
 
 beforeEach(() => {
   mockPathname = "/";
   mockCheckUpdate = true;
+  mockIsGm = false;
 });
 
 test("uses the wide content rail for dense workspace pages", () => {
@@ -26,6 +29,12 @@ test("uses the wide content rail for dense workspace pages", () => {
   expect(isWideOptionsPage("/input")).toBe(false);
 });
 
+test("uses full-width rail for file translation page", () => {
+  expect(isFullWidthOptionsPage("/file-translate")).toBe(true);
+  expect(isFullWidthOptionsPage("/file-translate/")).toBe(true);
+  expect(isFullWidthOptionsPage("/apis")).toBe(false);
+});
+
 jest.mock("react-router-dom", () => ({
   Outlet: () => {
     const React = require("react");
@@ -34,6 +43,11 @@ jest.mock("react-router-dom", () => ({
   useLocation: () => ({ pathname: mockPathname }),
 }));
 jest.mock("../../hooks/I18n", () => ({ useI18n: () => (key) => key }));
+jest.mock("../../libs/client", () => ({
+  get isGm() {
+    return mockIsGm;
+  },
+}));
 jest.mock("../../hooks/Setting", () => ({
   useSetting: () => ({ setting: { checkUpdate: mockCheckUpdate } }),
 }));
@@ -80,10 +94,12 @@ jest.mock("./Navigator", () => {
 });
 
 test.each([
-  ["/apis/", "options_translation_services", true],
+  ["/apis/", "options_service_config", true],
   ["/prompts///", "prompt_management", true],
+  ["/terms/", "terminology_tables", true],
   ["/playground/", "Playground", true],
   ["/rules/", "options_web_translation", false],
+  ["/image-translate/", "image_translate", false],
 ])("uses the matching page metadata at %s", (pathname, title, wide) => {
   mockPathname = pathname;
   const container = document.createElement("div");
@@ -383,19 +399,28 @@ describe("isNewerVersion", () => {
 });
 
 describe("Layout checkUpdate setting effect", () => {
-  const originalNodeEnv = process.env.NODE_ENV;
+  const originalEnv = process.env;
   const originalFetch = global.fetch;
 
   beforeEach(() => {
-    process.env.NODE_ENV = "development";
-    process.env.REACT_APP_VERSION = "2.0.32";
-    process.env.REACT_APP_VERSION_URL = "https://primary.example/version.txt";
+    process.env = {
+      ...originalEnv,
+      NODE_ENV: "development",
+      REACT_APP_VERSION: "2.0.32",
+      REACT_APP_VERSION_URL: "https://primary.example/version.txt",
+      REACT_APP_VERSION_URL_GITHUB: "https://github.example/version.txt",
+      REACT_APP_USERSCRIPT_DOWNLOADURL:
+        "https://primary.example/script.user.js",
+      REACT_APP_USERSCRIPT_IOS_DOWNLOADURL:
+        "https://primary.example/script-ios.user.js",
+    };
     global.fetch = jest.fn();
   });
 
   afterEach(() => {
-    process.env.NODE_ENV = originalNodeEnv;
+    process.env = originalEnv;
     global.fetch = originalFetch;
+    delete window.APP_INFO;
   });
 
   test("does not fetch latest version when checkUpdate is false", async () => {
@@ -465,4 +490,51 @@ describe("Layout checkUpdate setting effect", () => {
 
     act(() => root.unmount());
   });
+
+  test.each([
+    ["userscript", true, "2.2.0", true],
+    ["current userscript", true, "2.2.1", false],
+    ["extension", false, undefined, true],
+    ["newer userscript", true, "2.2.2", false],
+    ["userscript without bridge version", true, undefined, false],
+    ["userscript with invalid bridge version", true, "invalid", false],
+  ])(
+    "checks the right version for %s",
+    async (_, isGm, installed, showsAlert) => {
+      mockIsGm = isGm;
+      process.env.REACT_APP_VERSION = isGm ? "2.2.1" : "2.2.0";
+      if (installed) window.APP_INFO = { version: installed };
+      global.fetch.mockImplementation(async (url) => ({
+        ok: !url.startsWith("https://primary.example/version.txt"),
+        text: async () => "2.2.1",
+      }));
+
+      const container = document.createElement("div");
+      const root = createRoot(container);
+      await act(async () => root.render(<Layout />));
+
+      const versionUrls = global.fetch.mock.calls.map(
+        ([url]) => url.split("?")[0]
+      );
+      expect(versionUrls).toEqual(
+        isGm && !isValidVersion(installed)
+          ? []
+          : [
+              "https://primary.example/version.txt",
+              "https://github.example/version.txt",
+            ]
+      );
+      const alert = container.querySelector(".kt-options-version-alert");
+      expect(Boolean(alert)).toBe(showsAlert);
+      if (showsAlert && isGm) {
+        expect(
+          Array.from(alert.querySelectorAll("a"), ({ href }) => href)
+        ).toEqual([
+          "https://primary.example/script.user.js",
+          "https://primary.example/script-ios.user.js",
+        ]);
+      }
+      act(() => root.unmount());
+    }
+  );
 });
