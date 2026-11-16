@@ -265,4 +265,3 @@ export interface JevLoadSpec {
   configFile: string;
   device: "webgpu" | "wasm";
 }
-

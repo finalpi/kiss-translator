@@ -286,8 +286,8 @@ export function ContentFabContent({
         return;
       }
       if (opensPopup) {
-        // Let the panel manage focus when it opens and closes.
-        closeMenu();
+        // Preserve the trigger until PopupManager records its focus return target.
+        setOpen(false);
         processActions({ action: MSG_POPUP_TOGGLE });
         return;
       }
@@ -297,7 +297,7 @@ export function ContentFabContent({
       }
       setOpen((current) => !current);
     },
-    [closeMenu, moved, opensMenu, opensPopup, processActions, runAction]
+    [moved, opensMenu, opensPopup, processActions, runAction]
   );
 
   // Close the menu and return focus to the FAB before menu items unmount.

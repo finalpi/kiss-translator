@@ -158,4 +158,3 @@ export async function sha256File(path: string, signal?: AbortSignal): Promise<st
   const file = await getFile(path);
   return sha256Blob(file, signal);
 }
-
